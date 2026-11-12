@@ -1,35 +1,34 @@
 # Datos
 
-Los datos no se incluyen en el repositorio. Son registros horarios de la estación
-**Ernesto Cortissoz** (Barranquilla), descargados de la
+Registros horarios de la estación **Ernesto Cortissoz** (Barranquilla, estación
+80028099999), descargados de la
 [Integrated Surface Database (ISD)](https://www.ncei.noaa.gov/products/land-based-station/integrated-surface-database)
-de NOAA.
+de NOAA. Cubren del 1 de enero de 2023 al 24 de agosto de 2025.
 
-## Archivos esperados
+| Archivo | Registros | Año de las fechas |
+| --- | ---: | --- |
+| `Data2023.csv` | 12 963 | 2024 |
+| `Data2024.csv` | 11 502 | 2023 |
+| `Data2025.csv` | 9 218 | 2025 |
 
-Guarde un archivo por año en esta carpeta con el nombre `DataYYYY.csv`:
+> **Nota:** los nombres de `Data2023.csv` y `Data2024.csv` están intercambiados respecto
+> al año de sus fechas. El análisis toma el año de la fecha de cada registro y no del nombre
+> del archivo, así que los resultados no cambian; el documento metodológico lo detecta y lo
+> informa en la sección 1.4.
 
-```
-Data/
-├── Data2023.csv
-├── Data2024.csv
-└── Data2025.csv
-```
+## Convención de nombres
 
-La importación busca automáticamente todos los archivos que siguen esta convención,
-así que para agregar un año (por ejemplo `Data2026.csv`) basta con guardarlo aquí.
+La importación busca automáticamente todos los archivos `DataYYYY.csv` de esta carpeta.
+Para agregar un año (por ejemplo `Data2026.csv`), basta con guardarlo aquí y volver a
+compilar el documento.
 
 ## Columnas requeridas
 
-El análisis valida que cada archivo tenga las columnas de fecha y hora (UTC),
-temperatura del aire (`TMP`), punto de rocío (`DEW`) y viento (`WND`) en el
-formato de la ISD.
+Cada archivo debe tener `DATE` (UTC), `TMP` (temperatura del aire), `DEW` (punto de rocío)
+y `WND` (viento) en el formato de la ISD. También se conservan, si existen, `REPORT_TYPE`,
+`LATITUDE`, `LONGITUDE`, `ELEVATION` y `NAME`.
 
-## Antes de subir los datos
+## Licencia de los datos
 
-Si deciden publicar los CSV, verifiquen primero:
-
-- la licencia y las condiciones de redistribución de NOAA;
-- el tamaño de los archivos;
-- que no contengan información privada;
-- que cada archivo corresponda realmente al año indicado.
+Los datos de la ISD son de NOAA (National Centers for Environmental Information) y se
+redistribuyen sin modificaciones. Si los usa, cite a NOAA NCEI como fuente.
