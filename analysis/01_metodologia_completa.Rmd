@@ -231,3 +231,745 @@ resumen_cobertura
 El control de cobertura conserva únicamente los días con al menos 18 horas válidas en temperatura, humedad y viento. Este umbral exige información para tres cuartas partes del ciclo diario y reduce el efecto de días construidos con observaciones escasas.
 
 **Para el caso de Barranquilla:** de los `r fmt(resumen_cobertura$Dias_observados, 0)` días observados, `r fmt(resumen_cobertura$Dias_completos_18h, 0)` contaron con al menos 18 horas válidas en las tres variables, equivalente a una cobertura diaria conjunta del `r fmt(100 * resumen_cobertura$Dias_completos_18h / resumen_cobertura$Dias_observados)` %.
+
+# 3. Caracterización temporal del clima
+
+## 3.1. Serie diaria meteorológica
+
+```{r construir-serie-diaria-meteorologica}
+meteorologia_diaria <- datos_limpios %>%
+  group_by(Fecha) %>%
+  summarise(
+    Horas_TMP = sum(!is.na(TMP)),
+    Horas_HR = sum(!is.na(HR)),
+    Horas_WND = sum(!is.na(WND)),
+    TMP_media = if (Horas_TMP >= 18) mean(TMP, na.rm = TRUE) else NA_real_,
+    TMP_max = if (Horas_TMP >= 18) max(TMP, na.rm = TRUE) else NA_real_,
+    HR_media = if (Horas_HR >= 18) mean(HR, na.rm = TRUE) else NA_real_,
+    WND_media = if (Horas_WND >= 18) mean(WND, na.rm = TRUE) else NA_real_,
+    .groups = "drop"
+  ) %>%
+  filter(complete.cases(TMP_media, TMP_max, HR_media, WND_media)) %>%
+  mutate(
+    Anio = as.integer(format(Fecha, "%Y")),
+    Numero_mes = as.integer(format(Fecha, "%m")),
+    Mes = factor(meses_es[Numero_mes], levels = meses_es, ordered = TRUE),
+    Epoca = asignar_epoca(Numero_mes),
+    WND_media_kmh = 3.6 * WND_media
+  ) %>%
+  arrange(Fecha)
+cat("Días con al menos 18 horas válidas en las tres variables:",
+    nrow(meteorologia_diaria), "\n")
+```
+
+## 3.2. Resúmenes mensuales
+
+```{r resumen-mensual-meteorologico}
+resumen_mensual <- meteorologia_diaria %>%
+  group_by(Mes) %>%
+  # Las medianas se calculan antes que las medias para no sobrescribir las columnas.
+  summarise(
+    TMP_mediana = median(TMP_media, na.rm = TRUE),
+    TMP_max_mediana = median(TMP_max, na.rm = TRUE),
+    HR_mediana = median(HR_media, na.rm = TRUE),
+    WND_mediana_kmh = median(WND_media_kmh, na.rm = TRUE),
+    TMP_media = mean(TMP_media, na.rm = TRUE),
+    TMP_max_media = mean(TMP_max, na.rm = TRUE),
+    HR_media = mean(HR_media, na.rm = TRUE),
+    WND_media_kmh = mean(WND_media_kmh, na.rm = TRUE),
+    Dias_validos = n(),
+    .groups = "drop"
+  ) %>%
+  relocate(TMP_media, TMP_mediana, TMP_max_media, TMP_max_mediana,
+           HR_media, HR_mediana, WND_media_kmh, WND_mediana_kmh,
+           .after = Mes) %>%
+  complete(Mes = factor(meses_es, levels = meses_es, ordered = TRUE)) %>%
+  arrange(Mes)
+resumen_mensual
+```
+
+Los resúmenes mensuales describen el nivel típico y la variación anual de cada variable en sus unidades originales. La comparación conjunta permite reconocer meses con mayor carga térmica, mayor humedad o mayor ventilación antes de construir la temperatura aparente.
+
+**Para el caso de Barranquilla:** la temperatura media mensual osciló entre `r fmt(val_ext(resumen_mensual, "TMP_media", which.min))` °C en `r mes_ext(resumen_mensual, "TMP_media", which.min)` y `r fmt(val_ext(resumen_mensual, "TMP_media"))` °C en `r mes_ext(resumen_mensual, "TMP_media")`, mientras que la temperatura máxima media varió entre `r fmt(val_ext(resumen_mensual, "TMP_max_media", which.min))` °C en `r mes_ext(resumen_mensual, "TMP_max_media", which.min)` y `r fmt(val_ext(resumen_mensual, "TMP_max_media"))` °C en `r mes_ext(resumen_mensual, "TMP_max_media")`. La humedad relativa media fue alta durante todo el año: registró `r fmt(val_ext(resumen_mensual, "HR_media", which.min))` % en `r mes_ext(resumen_mensual, "HR_media", which.min)` y `r fmt(val_ext(resumen_mensual, "HR_media"))` % en `r mes_ext(resumen_mensual, "HR_media")`, y se mantuvo por encima de `r floor(min(resumen_mensual$HR_media[5:11]))` % entre mayo y noviembre. El viento mostró el contraste más pronunciado, con `r fmt(val_ext(resumen_mensual, "WND_media_kmh"))` km/h en `r mes_ext(resumen_mensual, "WND_media_kmh")` y `r fmt(val_ext(resumen_mensual, "WND_media_kmh", which.min))` km/h en `r mes_ext(resumen_mensual, "WND_media_kmh", which.min)`. En conjunto, la mayor humedad y la menor ventilación ayudan a explicar el aumento de la carga térmica aparente durante buena parte del segundo semestre.
+
+## 3.3. Perfiles mensuales en unidades originales
+
+```{r graficos-mensuales-meteorologicos}
+tema_mensual <- theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+limite_inferior_temperatura <- floor(
+  min(resumen_mensual$TMP_media, resumen_mensual$TMP_max_media, na.rm = TRUE)
+) - 1
+limite_superior_temperatura <- ceiling(
+  max(resumen_mensual$TMP_media, resumen_mensual$TMP_max_media, na.rm = TRUE)
+) + 1
+
+g_temperatura <- resumen_mensual %>%
+  select(Mes, `Temperatura media` = TMP_media,
+         `Temperatura máxima media` = TMP_max_media) %>%
+  pivot_longer(-Mes, names_to = "Variable", values_to = "Valor") %>%
+  ggplot(aes(Mes, Valor, color = Variable, group = Variable)) +
+  geom_line(linewidth = 1, na.rm = TRUE) +
+  geom_point(size = 2.5, na.rm = TRUE) +
+  scale_color_manual(values = c(
+    "Temperatura media" = "#D95F02",
+    "Temperatura máxima media" = "#B2182B")) +
+  scale_y_continuous(
+    breaks = seq(limite_inferior_temperatura, limite_superior_temperatura, 1),
+    expand = expansion(mult = c(0.02, 0.05))) +
+  coord_cartesian(ylim = c(limite_inferior_temperatura,
+                           limite_superior_temperatura)) +
+  labs(title = "Temperatura mensual",
+       subtitle = paste0("Escala ajustada al rango observado: ",
+                         limite_inferior_temperatura, " a ",
+                         limite_superior_temperatura, " °C"),
+       x = "Mes", y = "°C", color = NULL) +
+  tema_mensual
+print(g_temperatura)
+
+limite_superior_humedad <- min(
+  100,
+  ceiling(max(resumen_mensual$HR_media,
+              resumen_mensual$HR_mediana, na.rm = TRUE) + 5)
+)
+g_humedad <- resumen_mensual %>%
+  select(Mes, Media = HR_media, Mediana = HR_mediana) %>%
+  pivot_longer(-Mes, names_to = "Estadistico", values_to = "Valor") %>%
+  ggplot(aes(Mes, Valor, fill = Estadistico)) +
+  geom_col(position = "dodge", color = "black", na.rm = TRUE) +
+  scale_fill_manual(values = c(Media = "#6BAED6", Mediana = "#BDD7E7")) +
+  scale_y_continuous(limits = c(0, limite_superior_humedad),
+                     breaks = seq(0, limite_superior_humedad, 10),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(title = "Humedad relativa mensual", x = "Mes", y = "%",
+       fill = "Estadístico") +
+  tema_mensual
+print(g_humedad)
+
+limite_superior_viento <- ceiling(
+  max(resumen_mensual$WND_media_kmh,
+      resumen_mensual$WND_mediana_kmh, na.rm = TRUE) + 2
+)
+g_viento <- resumen_mensual %>%
+  select(Mes, Media = WND_media_kmh, Mediana = WND_mediana_kmh) %>%
+  pivot_longer(-Mes, names_to = "Estadistico", values_to = "Valor") %>%
+  ggplot(aes(Mes, Valor, fill = Estadistico)) +
+  geom_col(position = "dodge", color = "black", na.rm = TRUE) +
+  scale_fill_manual(values = c(Media = "#74C476", Mediana = "#C7E9C0")) +
+  scale_y_continuous(limits = c(0, limite_superior_viento),
+                     breaks = scales::pretty_breaks(n = 6),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(title = "Velocidad mensual del viento", x = "Mes", y = "km/h",
+       fill = "Estadístico") +
+  tema_mensual
+print(g_viento)
+```
+
+En gráficos mensuales, la cercanía entre media y mediana indica que el comportamiento central de la variable es estable y que el promedio no está dominado por unos pocos valores extremos. Las escalas se mantienen en unidades físicas para conservar una interpretación meteorológica directa.
+
+**Para el caso de Barranquilla:** la media y la mediana fueron muy próximas en temperatura, humedad y viento. Febrero combina las temperaturas y humedades más bajas con el viento más intenso, mientras que entre mayo y noviembre predominan mayor humedad y ventilación más débil.
+
+## 3.4. Patrones mensuales normalizados
+
+```{r funciones-patrones-mensuales-normalizados}
+```
+
+```{r patrones-mensuales-normalizados}
+patrones_mensuales <- resumen_mensual %>%
+  mutate(
+    Numero_mes = match(
+      as.character(Mes),
+      meses_es
+    )
+  ) %>%
+  select(
+    Mes,
+    Numero_mes,
+    Temperatura = TMP_media,
+    Humedad = HR_media,
+    Viento = WND_media_kmh
+  ) %>%
+  pivot_longer(
+    cols = c(
+      Temperatura,
+      Humedad,
+      Viento
+    ),
+    names_to = "Variable",
+    values_to = "Valor_original"
+  ) %>%
+  group_by(Variable) %>%
+  arrange(
+    Numero_mes,
+    .by_group = TRUE
+  ) %>%
+  mutate(
+    Nivel_relativo = normalizar_0_100(
+      Valor_original
+    )
+  ) %>%
+  ungroup()
+
+filas_problematicas <- patrones_mensuales %>%
+  filter(
+    is.na(Numero_mes) |
+      !is.finite(Valor_original) |
+      !is.finite(Nivel_relativo) |
+      Nivel_relativo < 0 |
+      Nivel_relativo > 100
+  )
+
+if (nrow(filas_problematicas) > 0) {
+  print(
+    filas_problematicas %>%
+      select(
+        Mes,
+        Numero_mes,
+        Variable,
+        Valor_original,
+        Nivel_relativo
+      )
+  )
+
+  stop(
+    "Existen datos mensuales ausentes o fuera del intervalo 0-100."
+  )
+}
+
+stopifnot(
+  nrow(patrones_mensuales) == 36,
+  all(table(patrones_mensuales$Variable) == 12),
+  !anyNA(patrones_mensuales$Numero_mes),
+  !anyNA(patrones_mensuales$Valor_original),
+  !anyNA(patrones_mensuales$Nivel_relativo)
+)
+
+ggplot(
+  patrones_mensuales,
+  aes(
+    x = Numero_mes,
+    y = Nivel_relativo,
+    color = Variable,
+    group = Variable
+  )
+) +
+  geom_line(
+    linewidth = 1.1
+  ) +
+  geom_point(
+    size = 2.7
+  ) +
+  scale_x_continuous(
+    breaks = 1:12,
+    labels = meses_es
+  ) +
+  scale_y_continuous(
+    breaks = seq(
+      0,
+      100,
+      by = 20
+    ),
+    expand = expansion(
+      mult = c(0, 0)
+    ),
+    oob = scales::squish
+  ) +
+  coord_cartesian(
+    ylim = c(0, 100)
+  ) +
+  scale_color_manual(
+    values = c(
+      Humedad = "#3182BD",
+      Temperatura = "#D95F02",
+      Viento = "#31A354"
+    )
+  ) +
+  labs(
+    title = "Patrones meteorológicos mensuales",
+    subtitle = "Escala relativa de 0 a 100 calculada por variable",
+    x = "Mes",
+    y = "Nivel relativo dentro de cada variable",
+    color = "Variable"
+  ) +
+  tema_mensual
+```
+
+La transformación de 0 a 100 se realiza por separado para cada variable y permite comparar la forma de los ciclos mensuales, no sus magnitudes físicas. Un valor de 0 representa el mínimo mensual de la variable durante el periodo y un valor de 100 representa su máximo mensual.
+
+**Para el caso de Barranquilla:** el perfil normalizado evidencia una relación temporal inversa entre humedad y viento. En febrero, humedad y temperatura alcanzan sus niveles relativos mínimos mientras el viento llega al máximo. Desde mayo aumenta la humedad y disminuye el viento; entre agosto y noviembre, temperatura y humedad permanecen en niveles altos y el viento se aproxima a sus mínimos. El debilitamiento de la ventilación aparece así como un componente importante del aumento de la carga térmica aparente.
+
+## 3.5. Consistencia entre años
+
+```{r perfiles-mensuales-por-anio}
+perfiles_anuales <- meteorologia_diaria %>%
+  group_by(Anio, Mes) %>%
+  summarise(TMP_media = mean(TMP_media, na.rm = TRUE),
+            HR_media = mean(HR_media, na.rm = TRUE),
+            WND_media_kmh = mean(WND_media_kmh, na.rm = TRUE),
+            Dias_validos = n(), .groups = "drop")
+
+perfiles_anuales_largos <- perfiles_anuales %>%
+  pivot_longer(cols = c(TMP_media, HR_media, WND_media_kmh),
+               names_to = "Variable", values_to = "Valor") %>%
+  mutate(Variable = recode(
+    Variable,
+    TMP_media = "Temperatura media (°C)",
+    HR_media = "Humedad relativa media (%)",
+    WND_media_kmh = "Viento medio (km/h)"))
+
+ggplot(perfiles_anuales_largos,
+       aes(Mes, Valor, color = factor(Anio), group = Anio)) +
+  geom_line(linewidth = 0.9, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  facet_wrap(~ Variable, scales = "free_y", ncol = 1) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 6),
+                     expand = expansion(mult = c(0.08, 0.10))) +
+  labs(title = "Repetición de los perfiles mensuales entre años",
+       subtitle = paste("Cada panel utiliza una escala ajustada a su variable;",
+                        "los años se comparan con la misma escala dentro de cada panel."),
+       x = "Mes", y = NULL, color = "Año") +
+  tema_mensual
+```
+
+La comparación por año evalúa si el perfil mensual conjunto se repite y permite distinguir estructura estacional de variabilidad interanual. Las curvas se comparan con una escala común dentro de cada variable.
+
+**Para el caso de Barranquilla:** los tres años reproducen el aumento de humedad desde abril o mayo y la disminución del viento durante la parte central del año. En 2023 se observó mayor viento al inicio del año y mayor temperatura entre agosto y septiembre; en 2024 la humedad fue generalmente superior y noviembre presentó una temperatura media particularmente baja. Los datos disponibles de 2025 llegan hasta agosto, por lo que el perfil de ese año es parcial. El ciclo mensual se repite, aunque su magnitud cambia entre años.
+
+# 4. Distribuciones y asociaciones meteorológicas
+
+## 4.1. Normalidad
+
+```{r funciones-pruebas-normalidad}
+```
+
+```{r pruebas-normalidad}
+set.seed(2026)
+normalidad <- bind_rows(lapply(c("TMP", "HR", "WND"), function(variable) {
+  x <- na.omit(datos_limpios[[variable]])
+  muestra <- sample(x, min(5000, length(x)))
+  sw <- shapiro.test(muestra)
+  li <- lilliefors(x)
+  ad <- anderson_darling(x)
+  data.frame(Variable = variable, n = length(x),
+             W_Shapiro = round(unname(sw$statistic), 3),
+             p_Shapiro = fmt_p(sw$p.value),
+             D_Lilliefors = round(unname(li["estadistico"]), 3),
+             p_Lilliefors = fmt_p(unname(li["p"])),
+             A2_Anderson_Darling = round(unname(ad["estadistico"]), 1),
+             p_Anderson_Darling = fmt_p(unname(ad["p"])))
+}))
+normalidad
+```
+
+La prueba de Shapiro-Wilk se utiliza como diagnóstico de la forma de las distribuciones sobre una muestra reproducible de hasta 5000 observaciones por variable. Como `shapiro.test()` no admite más de 5000 datos, se agregan aproximaciones de las pruebas de Lilliefors (Kolmogorov-Smirnov con media y varianza estimadas) y Anderson-Darling, implementadas en R base y aplicadas a todas las horas; Anderson-Darling da más peso a las colas de la distribución. Cuando el ajuste a normalidad es reducido, las medianas, los rangos intercuartílicos y las correlaciones por rangos ofrecen una descripción robusta.
+
+**Para el caso de Barranquilla:** las tres pruebas rechazaron la normalidad de temperatura, humedad y viento (p < 0,001 en todos los casos). Los estadísticos W de Shapiro-Wilk fueron `r fmt(normalidad$W_Shapiro[1], 3)`, `r fmt(normalidad$W_Shapiro[2], 3)` y `r fmt(normalidad$W_Shapiro[3], 3)`, respectivamente; `r c("la temperatura", "la humedad", "el viento")[which.min(normalidad$W_Shapiro)]` mostró la mayor desviación relativa. Con más de `r fmt(floor(min(normalidad$n) / 1000) * 1000, 0)` horas por variable, incluso desviaciones pequeñas resultan significativas, pero las tres pruebas coinciden. Por ello, las comparaciones principales se apoyan en medidas robustas, Spearman, Kendall, Kruskal-Wallis y Wilcoxon.
+
+## 4.2. Asociaciones diarias
+
+```{r correlaciones-meteorologicas-diarias}
+variables_meteorologicas <- c("TMP_media", "TMP_max", "HR_media", "WND_media")
+pares_meteorologicos <- combn(variables_meteorologicas, 2, simplify = FALSE)
+correlaciones_meteorologicas <- bind_rows(lapply(pares_meteorologicos, function(par) {
+  x <- meteorologia_diaria[[par[1]]]
+  y <- meteorologia_diaria[[par[2]]]
+  ok <- complete.cases(x, y)
+  sp <- cor.test(x[ok], y[ok], method = "spearman", exact = FALSE)
+  kd <- cor.test(x[ok], y[ok], method = "kendall", exact = FALSE)
+  data.frame(Par = paste(par, collapse = " - "), n = sum(ok),
+             Rho_Spearman = round(unname(sp$estimate), 3),
+             p_Spearman = fmt_p(sp$p.value),
+             Tau_Kendall = round(unname(kd$estimate), 3),
+             p_Kendall = fmt_p(kd$p.value))
+}))
+correlaciones_meteorologicas
+```
+
+Las correlaciones de Spearman y Kendall cuantifican asociaciones monotónicas entre variables diarias. El signo indica la dirección y la magnitud resume la intensidad de la relación marginal.
+
+```{r aux-correlaciones, include=FALSE}
+rho_par <- function(par, col = "Rho_Spearman") {
+  correlaciones_meteorologicas[[col]][correlaciones_meteorologicas$Par == par]
+}
+```
+
+**Para el caso de Barranquilla:** la temperatura media y la máxima diaria presentaron una asociación positiva fuerte (Spearman = `r fmt(rho_par("TMP_media - TMP_max"), 3)`). La relación más intensa fue la asociación inversa entre humedad y viento (Spearman = `r fmt(rho_par("HR_media - WND_media"), 3)`; Kendall = `r fmt(rho_par("HR_media - WND_media", "Tau_Kendall"), 3)`). Las relaciones de la temperatura máxima con humedad (`r fmt(rho_par("TMP_max - HR_media"), 3)`) y viento (`r fmt(rho_par("TMP_max - WND_media"), 3)`) fueron débiles, y la relación entre temperatura media y viento fue prácticamente nula (`r fmt(rho_par("TMP_media - WND_media"), 3)`). La caracterización del confort requiere integrar las tres variables.
+
+# 5. Evaluación multivariada y selección del índice
+
+```{r evaluar-pca-y-factor}
+X <- na.omit(datos_limpios[, c("TMP", "HR", "WND")])
+referencia <- as.vector(-scale(X$TMP) - scale(X$HR) + scale(X$WND))
+orientar <- function(puntaje) {
+  if (cor(puntaje, referencia, method = "spearman") < 0) -puntaje else puntaje
+}
+pca <- prcomp(X, center = TRUE, scale. = TRUE)
+varianza_pca <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+pc1 <- orientar(pca$x[, 1])
+efa <- factanal(X, factors = 1, scores = "regression")
+factor1 <- orientar(efa$scores[, 1])
+
+sentido_pca_efa <- data.frame(
+  Indice = c("PCA: PC1 orientada", "Factor orientado"),
+  Rho_TMP = round(c(cor(pc1, X$TMP, method = "spearman"),
+                    cor(factor1, X$TMP, method = "spearman")), 3),
+  Rho_HR = round(c(cor(pc1, X$HR, method = "spearman"),
+                   cor(factor1, X$HR, method = "spearman")), 3),
+  Rho_WND = round(c(cor(pc1, X$WND, method = "spearman"),
+                    cor(factor1, X$WND, method = "spearman")), 3)
+)
+cat("Cargas de PC1:\n"); print(round(pca$rotation[, 1], 3))
+cat("Varianza explicada por PC1 (%):", round(varianza_pca[1], 1), "\n")
+cat("Cargas del factor:\n"); print(round(efa$loadings[, 1], 3))
+sentido_pca_efa
+```
+
+El PCA y el análisis factorial examinan si un índice estadístico único reproduce la estructura conjunta de temperatura, humedad y viento. La selección del índice final considera tanto la varianza representada como el sentido físico de las cargas y correlaciones.
+
+**Para el caso de Barranquilla:** la primera componente explicó `r fmt(varianza_pca[1])` % de la varianza, pero después de orientarla hacia mayor confort conservó una correlación positiva con temperatura (`r fmt(sentido_pca_efa$Rho_TMP[1], 3)`), negativa con humedad (`r fmt(sentido_pca_efa$Rho_HR[1], 3)`) y positiva con viento (`r fmt(sentido_pca_efa$Rho_WND[1], 3)`). Es decir, el índice indicaría más confort cuanto más calor hace, porque la humedad relativa se calcula a partir de la temperatura y ambas cargan con signos opuestos. El factor único quedó casi completamente determinado por la humedad (carga de `r fmt(efa$loadings["HR", 1], 3)`) y también conservó asociación positiva con temperatura (`r fmt(sentido_pca_efa$Rho_TMP[2], 3)`). Estos índices representan la covariación estadística, pero la ecuación de Steadman ofrece una base física más interpretable para el ICT.
+
+## 5.1. Adecuación de los datos y estructura por época
+
+El índice KMO compara las correlaciones con las correlaciones parciales; valores inferiores a 0,6 indican que los datos no son buenos candidatos para un análisis factorial. La prueba de Bartlett contrasta si las variables están incorrelacionadas. Además, se estima un factor en cada época y se comparan sus cargas con la congruencia de Tucker, que vale 1 cuando las cargas son proporcionales.
+
+```{r funciones-kmo-bartlett-tucker}
+```
+
+```{r kmo-bartlett-tucker}
+X_epoca <- na.omit(as.data.frame(datos_limpios[, c("TMP", "HR", "WND", "Epoca")]))
+adecuacion <- bind_rows(lapply(c("Total", levels(X_epoca$Epoca)), function(g) {
+  x <- if (g == "Total") X_epoca else X_epoca[X_epoca$Epoca == g, ]
+  x <- x[, c("TMP", "HR", "WND")]
+  b <- bartlett_esfericidad(x)
+  data.frame(Grupo = g, n = nrow(x), KMO = round(kmo(x), 3),
+             Chi2_Bartlett = round(unname(b["chi2"]), 1),
+             p_Bartlett = fmt_p(unname(b["p"])))
+}))
+adecuacion
+
+cargas_epoca <- sapply(levels(X_epoca$Epoca), function(e) {
+  as.numeric(factanal(X_epoca[X_epoca$Epoca == e, c("TMP", "HR", "WND")],
+                      factors = 1)$loadings)
+})
+rownames(cargas_epoca) <- c("TMP", "HR", "WND")
+round(cargas_epoca, 3)
+congruencia <- sum(cargas_epoca[, 1] * cargas_epoca[, 2]) /
+  sqrt(sum(cargas_epoca[, 1]^2) * sum(cargas_epoca[, 2]^2))
+cat("Congruencia de Tucker entre épocas:", round(congruencia, 3), "\n")
+```
+
+**Para el caso de Barranquilla:** Bartlett rechazó la incorrelación (p `r fmt_pt(min(bartlett_esfericidad(X_epoca[, 1:3])["p"], 1))`), lo que solo confirma que existe alguna correlación. El KMO fue `r fmt(adecuacion$KMO[1], 2)` en el total, `r fmt(adecuacion$KMO[2], 2)` en la época seca y `r fmt(adecuacion$KMO[3], 2)` en la húmeda, `r if (all(adecuacion$KMO < 0.6)) "todos por debajo de 0,6" else "no todos por encima de 0,6"`. La congruencia de Tucker entre las cargas de las dos épocas fue `r fmt(abs(congruencia), 2)`: la estructura del factor es la misma en ambas, con temperatura y humedad en signos opuestos. Ni dividir por época corrige el problema de sentido, lo que respalda el uso de Steadman.
+
+# 6. Temperatura aparente de Steadman
+
+\[
+e_i = \frac{HR_i}{100}\,6.105
+\exp\left(\frac{17.27TMP_i}{237.7+TMP_i}\right),
+\]
+
+\[
+AT_i = TMP_i + 0.33e_i - 0.70WND_i - 4.
+\]
+
+```{r calcular-temperatura-aparente}
+datos_limpios <- datos_limpios %>%
+  mutate(
+    e = (HR / 100) * 6.105 * exp(17.27 * TMP / (237.7 + TMP)),
+    AT = TMP + 0.33 * e - 0.70 * WND - 4
+  )
+summary(datos_limpios$AT)
+```
+
+La ecuación de Steadman combina temperatura, presión de vapor y enfriamiento por viento para estimar la carga térmica aparente a la sombra. La distribución horaria permite describir el nivel típico, la dispersión y los episodios extremos.
+
+**Para el caso de Barranquilla:** la temperatura aparente horaria tuvo una mediana de `r fmt(median(datos_limpios$AT, na.rm = TRUE), 2)` °C y una media de `r fmt(mean(datos_limpios$AT, na.rm = TRUE), 2)` °C. El 50 % central se ubicó entre `r fmt(quantile(datos_limpios$AT, 0.25, na.rm = TRUE), 2)` y `r fmt(quantile(datos_limpios$AT, 0.75, na.rm = TRUE), 2)` °C, y el máximo alcanzó `r fmt(max(datos_limpios$AT, na.rm = TRUE), 2)` °C. Esto indica un centro estable acompañado de episodios horarios de carga térmica considerablemente mayor.
+
+## 6.1. Resumen mensual
+
+```{r resumen-mensual-temperatura-aparente}
+resumen_at_mensual <- datos_limpios %>%
+  filter(!is.na(AT)) %>%
+  group_by(Mes) %>%
+  summarise(AT_media = mean(AT, na.rm = TRUE),
+            AT_mediana = median(AT, na.rm = TRUE),
+            AT_p90 = quantile(AT, 0.90, na.rm = TRUE),
+            Horas_validas = n(), .groups = "drop") %>%
+  arrange(Mes)
+resumen_at_mensual
+```
+
+El resumen mensual de temperatura aparente compara el nivel medio, la mediana y el percentil 90. El percentil 90 caracteriza las horas de carga térmica alta dentro de cada mes.
+
+**Para el caso de Barranquilla:** la temperatura aparente media aumentó desde `r fmt(val_ext(resumen_at_mensual, "AT_media", which.min))` °C en `r mes_ext(resumen_at_mensual, "AT_media", which.min)` hasta `r fmt(val_ext(resumen_at_mensual, "AT_media"))` °C en `r mes_ext(resumen_at_mensual, "AT_media")`. El percentil 90 pasó de `r fmt(val_ext(resumen_at_mensual, "AT_p90", which.min))` °C a `r fmt(val_ext(resumen_at_mensual, "AT_p90"))` °C. Entre mayo y octubre, la media permaneció por encima de `r floor(min(resumen_at_mensual$AT_media[5:10]))` °C, evidenciando una carga térmica elevada y sostenida.
+
+## 6.2. Ciclo horario y mensual
+
+```{r mapa-calor-at-mes-hora}
+mapa_at <- datos_limpios %>%
+  filter(!is.na(AT)) %>%
+  group_by(Mes, Hora) %>%
+  summarise(AT_media = mean(AT, na.rm = TRUE),
+            Horas_validas = n(), .groups = "drop")
+
+ggplot(mapa_at, aes(Hora, Mes, fill = AT_media)) +
+  geom_tile(color = "white", linewidth = 0.15) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  scale_fill_gradient(low = "#F7FBFF", high = "#CB181D") +
+  labs(title = "Ciclo horario y mensual de la temperatura aparente",
+       x = "Hora local", y = "Mes", fill = "AT media (°C)") +
+  theme_minimal() + theme(panel.grid = element_blank())
+```
+
+El mapa de calor combina mes y hora local para identificar simultáneamente el ciclo intradiario y el ciclo anual de la temperatura aparente.
+
+**Para el caso de Barranquilla:** el máximo térmico se concentra entre las 11:00 y las 14:00. La franja de mayor intensidad es más amplia entre mayo y octubre, y septiembre presenta el núcleo más cálido. Las madrugadas son relativamente más frescas, aunque durante los meses más húmedos mantienen temperaturas aparentes superiores a las observadas al inicio del año.
+
+## 6.3. Ciclo diario por época
+
+```{r ciclo-diario-epoca}
+ciclo_epoca <- datos_limpios %>%
+  filter(!is.na(AT)) %>%
+  group_by(Epoca, Hora) %>%
+  summarise(AT_media = mean(AT), .groups = "drop")
+
+ggplot(ciclo_epoca, aes(Hora, AT_media, color = Epoca)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 1.8) +
+  scale_color_manual(values = colores_epoca) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  labs(title = "Ciclo diario de la temperatura aparente por época",
+       x = "Hora local", y = "AT media (°C)", color = "Época") +
+  theme_minimal() + theme(legend.position = "top")
+
+extremos_ciclo <- ciclo_epoca %>%
+  group_by(Epoca) %>%
+  summarise(Maximo = max(AT_media), Hora_maximo = Hora[which.max(AT_media)],
+            Minimo = min(AT_media), Hora_minimo = Hora[which.min(AT_media)],
+            .groups = "drop")
+extremos_ciclo
+```
+
+El ciclo diario promedio por época muestra si la diferencia entre épocas se concentra en el mediodía o se mantiene durante todo el día. Es la razón por la que el ICT y sus cadenas se construyen a escala diaria: a escala horaria, la probabilidad de pasar de un estado a otro dependería de la hora del día.
+
+**Para el caso de Barranquilla:** las dos curvas tienen la misma forma, con máximo `r if (extremos_ciclo$Hora_maximo[1] == extremos_ciclo$Hora_maximo[2]) paste0("hacia las ", extremos_ciclo$Hora_maximo[1], ":00 en ambas épocas") else paste0("hacia las ", extremos_ciclo$Hora_maximo[1], ":00 en la época seca y las ", extremos_ciclo$Hora_maximo[2], ":00 en la húmeda")` (`r fmt(extremos_ciclo$Maximo[1])` °C en la seca y `r fmt(extremos_ciclo$Maximo[2])` °C en la húmeda). La curva húmeda está por encima en todas las horas. De noche la época seca baja a `r fmt(extremos_ciclo$Minimo[1])` °C, mientras la húmeda no baja de `r fmt(extremos_ciclo$Minimo[2])` °C: en la época húmeda no hay un alivio nocturno comparable.
+
+# 7. Índice de Confort Térmico
+
+## 7.1. Serie diaria
+
+```{r construir-serie-diaria-ict}
+diario <- datos_limpios %>%
+  group_by(Fecha) %>%
+  summarise(
+    Horas = sum(!is.na(AT)),
+    AT_max = if (Horas > 0) max(AT, na.rm = TRUE) else NA_real_,
+    AT_media = if (Horas > 0) mean(AT, na.rm = TRUE) else NA_real_,
+    TMP_max = if (sum(!is.na(TMP)) > 0) max(TMP, na.rm = TRUE) else NA_real_,
+    HR_media = if (sum(!is.na(HR)) > 0) mean(HR, na.rm = TRUE) else NA_real_,
+    WND_media = if (sum(!is.na(WND)) > 0) mean(WND, na.rm = TRUE) else NA_real_,
+    Hora_AT_max = if (Horas > 0) {
+      Hora[which.max(replace(AT, is.na(AT), -Inf))]
+    } else NA_integer_,
+    .groups = "drop"
+  ) %>%
+  filter(Horas >= 18, complete.cases(AT_max, TMP_max, HR_media, WND_media)) %>%
+  mutate(Anio = as.integer(format(Fecha, "%Y")),
+         Numero_mes = as.integer(format(Fecha, "%m")),
+         Mes = factor(meses_es[Numero_mes], levels = meses_es, ordered = TRUE),
+         Dia_anio = as.integer(format(Fecha, "%j")),
+         Epoca = asignar_epoca(Numero_mes)) %>%
+  arrange(Fecha)
+cat("Días con al menos 18 horas válidas:", nrow(diario), "\n")
+cat("Porcentaje de máximos entre 10:00 y 14:00:",
+    round(100 * mean(diario$Hora_AT_max %in% 10:14), 1), "%\n")
+print(table(diario$Epoca))
+
+dias_solo_meteorologia <- setdiff(meteorologia_diaria$Fecha, diario$Fecha)
+horas_conjuntas <- datos_limpios %>%
+  filter(Fecha %in% as.Date(dias_solo_meteorologia)) %>%
+  group_by(Fecha) %>%
+  summarise(Horas_TMP = sum(!is.na(TMP)), Horas_HR = sum(!is.na(HR)),
+            Horas_WND = sum(!is.na(WND)), Horas_AT = sum(!is.na(AT)),
+            .groups = "drop")
+horas_conjuntas
+```
+
+La serie diaria conserva días con al menos 18 horas válidas y utiliza la temperatura aparente máxima para caracterizar el periodo de mayor carga térmica de cada jornada.
+
+La sección 2 exige 18 horas válidas en cada variable por separado, mientras que aquí se exigen 18 horas con AT válida, es decir, horas en las que las tres variables están disponibles al mismo tiempo. Por eso la serie del ICT puede tener algunos días menos que la serie meteorológica; la tabla anterior los identifica.
+
+**Para el caso de Barranquilla:** la serie final contiene `r fmt(nrow(diario), 0)` días (`r sum(diario$Epoca == "Seca")` de la época seca y `r sum(diario$Epoca == "Humeda")` de la húmeda) y, en `r fmt(100 * mean(diario$Hora_AT_max %in% 10:14))` % de ellos, la temperatura aparente máxima ocurrió entre las 10:00 y las 14:00. `r if (length(dias_solo_meteorologia) > 0) paste0("Frente a la sección 2 se pierde", ifelse(length(dias_solo_meteorologia) > 1, "n ", " "), length(dias_solo_meteorologia), " día", ifelse(length(dias_solo_meteorologia) > 1, "s", ""), " (", paste(format(as.Date(dias_solo_meteorologia), "%d/%m/%Y"), collapse = ", "), "), con cada variable completa por separado pero con menos de 18 horas en que las tres coinciden.") else ""`
+
+## 7.2. Construcción y sentido del ICT
+
+\[
+ICT_d = 100\left(
+\frac{AT_{\max}^{(\max)}-AT_{\max,d}}
+{AT_{\max}^{(\max)}-AT_{\max}^{(\min)}}
+\right).
+\]
+
+```{r calcular-ict}
+at_min <- min(diario$AT_max, na.rm = TRUE)
+at_max <- max(diario$AT_max, na.rm = TRUE)
+if (isTRUE(all.equal(at_min, at_max))) {
+  stop("No es posible normalizar el ICT: todas las AT máximas diarias son iguales.")
+}
+diario$ICT <- 100 * (at_max - diario$AT_max) / (at_max - at_min)
+summary(diario$ICT)
+```
+
+El ICT invierte y normaliza la temperatura aparente máxima diaria entre 0 y 100. Los valores altos representan mayor confort relativo dentro del periodo analizado y los valores bajos representan mayor carga térmica aparente.
+
+**Para el caso de Barranquilla:** el ICT tuvo una mediana de `r fmt(median(diario$ICT), 2)` y una media de `r fmt(mean(diario$ICT), 2)`. La mitad de los días se ubicó entre `r fmt(quantile(diario$ICT, 0.25), 2)` y `r fmt(quantile(diario$ICT, 0.75), 2)`; la escala expresa la posición relativa dentro del clima observado entre `r min(diario$Anio)` y `r max(diario$Anio)`. Un ICT de 100 corresponde a la AT máxima diaria más baja del periodo (`r fmt(at_min)` °C) y un ICT de 0 a la más alta (`r fmt(at_max)` °C); cada punto del ICT equivale a `r fmt((at_max - at_min) / 100, 3)` °C de AT máxima.
+
+```{r verificar-sentido-ict}
+verificacion <- data.frame(
+  Variable = c("TMP_max", "HR_media", "WND_media"),
+  Rho_Spearman = c(
+    cor(diario$ICT, diario$TMP_max, method = "spearman"),
+    cor(diario$ICT, diario$HR_media, method = "spearman"),
+    cor(diario$ICT, diario$WND_media, method = "spearman")
+  )) %>%
+  mutate(Rho_Spearman = round(Rho_Spearman, 3))
+verificacion
+```
+
+La verificación del sentido compara el ICT con sus variables meteorológicas componentes. Un índice coherente debe disminuir con mayor temperatura y humedad, y aumentar con mayor ventilación.
+
+**Para el caso de Barranquilla:** el ICT se relacionó negativamente con la temperatura máxima (`r fmt(verificacion$Rho_Spearman[1], 3)`) y la humedad media (`r fmt(verificacion$Rho_Spearman[2], 3)`), y positivamente con el viento medio (`r fmt(verificacion$Rho_Spearman[3], 3)`). La temperatura máxima presentó la asociación marginal más fuerte.
+
+# 8. Variación mensual del ICT
+
+```{r resumen-mensual-ict}
+resumen_ict_mensual <- diario %>%
+  group_by(Mes) %>%
+  summarise(Dias = n(), Media = mean(ICT, na.rm = TRUE),
+            Mediana = median(ICT, na.rm = TRUE),
+            Q1 = quantile(ICT, 0.25, na.rm = TRUE),
+            Q3 = quantile(ICT, 0.75, na.rm = TRUE),
+            RIC = IQR(ICT, na.rm = TRUE), .groups = "drop")
+resumen_ict_mensual
+```
+
+```{r caja-ict-por-mes}
+ggplot(diario, aes(Mes, ICT)) +
+  geom_boxplot(fill = "#9ECAE1", color = "black", outlier.alpha = 0.35) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 20),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(title = "Distribución mensual del ICT", x = "Mes", y = "ICT diario") +
+  tema_mensual
+```
+
+El resumen mensual utiliza media, mediana, cuartiles y rango intercuartílico para comparar el nivel y la dispersión del ICT entre meses. El diagrama de cajas conserva la distribución diaria y permite reconocer valores atípicos.
+
+```{r aux-ict-mensual, include=FALSE}
+orden_mediana <- order(resumen_ict_mensual$Mediana, decreasing = TRUE)
+nombre_mes <- function(i) meses_completos[match(as.character(resumen_ict_mensual$Mes[i]), meses_es)]
+med_may_ago <- resumen_ict_mensual$Mediana[as.character(resumen_ict_mensual$Mes) %in% c("May", "Jun", "Jul", "Ago")]
+orden_ric <- order(resumen_ict_mensual$RIC)
+```
+
+**Para el caso de Barranquilla:** `r nombre_mes(orden_mediana[1])` presentó la mayor mediana del ICT (`r fmt(resumen_ict_mensual$Mediana[orden_mediana[1]])`), seguido por `r nombre_mes(orden_mediana[2])` (`r fmt(resumen_ict_mensual$Mediana[orden_mediana[2]])`) y `r nombre_mes(orden_mediana[3])` (`r fmt(resumen_ict_mensual$Mediana[orden_mediana[3]])`). El mínimo mensual se observó en `r nombre_mes(orden_mediana[12])` (`r fmt(resumen_ict_mensual$Mediana[orden_mediana[12]])`). Entre mayo y agosto, las medianas permanecieron entre `r fmt(min(med_may_ago))` y `r fmt(max(med_may_ago))`, y desde octubre comenzó una recuperación hasta `r fmt(val_mes(resumen_ict_mensual, "Mediana", "Dic"))` en diciembre. `r tools::toTitleCase(mes_ext(resumen_ict_mensual, "RIC"))` tuvo el mayor rango intercuartílico (`r fmt(val_ext(resumen_ict_mensual, "RIC"))`), mientras `r nombre_mes(orden_ric[1])` y `r nombre_mes(orden_ric[2])` presentaron las distribuciones más concentradas, con RIC de `r fmt(resumen_ict_mensual$RIC[orden_ric[1]])` y `r fmt(resumen_ict_mensual$RIC[orden_ric[2]])`.
+
+## 8.1. Comparaciones mensuales
+
+```{r pruebas-ict-por-mes}
+prueba_meses <- kruskal.test(ICT ~ Mes, data = diario)
+pares_meses <- pairwise.wilcox.test(
+  diario$ICT, diario$Mes, p.adjust.method = "holm", exact = FALSE)
+prueba_meses
+round(pares_meses$p.value, 3)
+```
+
+Kruskal-Wallis evalúa diferencias globales entre los doce meses y las pruebas de Wilcoxon con ajuste de Holm localizan los pares con mayor evidencia de separación. La interpretación combina valores p, medianas, dispersión y dependencia temporal.
+
+**Para el caso de Barranquilla:** Kruskal-Wallis produjo un estadístico de `r fmt(prueba_meses$statistic, 2)` con p `r fmt_pt(prueba_meses$p.value)`. Las comparaciones ajustadas muestran similitud entre enero y marzo; entre mayo, junio, julio y agosto; y entre abril, noviembre y diciembre. Septiembre se distinguió por concentrar los valores más bajos. Los valores p se interpretan con cautela por la autocorrelación diaria.
+
+## 8.2. Consistencia entre años
+
+```{r ict-mensual-por-anio}
+ict_anio_mes <- diario %>%
+  group_by(Anio, Mes) %>%
+  summarise(ICT_mediana = median(ICT, na.rm = TRUE),
+            ICT_media = mean(ICT, na.rm = TRUE),
+            Dias = n(), .groups = "drop")
+
+ggplot(ict_anio_mes,
+       aes(Mes, ICT_mediana, color = factor(Anio), group = Anio)) +
+  geom_line(linewidth = 0.9, na.rm = TRUE) +
+  geom_point(size = 2, na.rm = TRUE) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 20),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(title = "Mediana mensual del ICT por año", x = "Mes",
+       y = "ICT mediano", color = "Año") +
+  tema_mensual
+```
+
+La comparación anual de medianas mensuales evalúa la repetición del ciclo del ICT y la variabilidad interanual de su intensidad.
+
+```{r aux-ict-anio, include=FALSE}
+v_am <- function(a, m) ict_anio_mes$ICT_mediana[ict_anio_mes$Anio == a & as.character(ict_anio_mes$Mes) == m]
+ultimo_mes <- max(diario$Numero_mes[diario$Anio == max(diario$Anio)])
+```
+
+**Para el caso de Barranquilla:** los tres años muestran una caída desde los primeros meses hacia la parte central. En 2023, enero a abril fueron más confortables y febrero alcanzó una mediana de `r fmt(v_am(2023, "Feb"))`. En 2024, julio y agosto se ubicaron en `r fmt(v_am(2024, "Jul"))` y `r fmt(v_am(2024, "Ago"))`, con recuperación hacia noviembre y diciembre. Los datos de `r max(diario$Anio)` llegan hasta `r meses_completos[ultimo_mes]` y muestran un ICT más estable en la parte central del año. El patrón general se repite, aunque cambia su intensidad.
+
+## 8.3. Contraste entre épocas
+
+```{r resumen-epocas}
+resumen_epocas <- diario %>%
+  group_by(Epoca) %>%
+  summarise(Dias = n(),
+            TMP_max = mean(TMP_max), AT_max = mean(AT_max),
+            Exceso_AT = mean(AT_max - TMP_max),
+            HR_media = mean(HR_media), WND_media_kmh = mean(3.6 * WND_media),
+            ICT_media = mean(ICT), ICT_mediana = median(ICT),
+            ICT_DE = sd(ICT), .groups = "drop")
+resumen_epocas %>% mutate(across(where(is.numeric) & !Dias, ~ round(.x, 2)))
+
+ict_seca <- diario$ICT[diario$Epoca == "Seca"]
+ict_húmeda <- diario$ICT[diario$Epoca == "Humeda"]
+prueba_w_at <- wilcox.test(AT_max ~ Epoca, data = diario, exact = FALSE)
+prueba_w_ict <- wilcox.test(ICT ~ Epoca, data = diario, exact = FALSE)
+prueba_fligner <- fligner.test(ICT ~ Epoca, data = diario)
+prueba_welch <- t.test(ICT ~ Epoca, data = diario)
+sd_combinada <- sqrt(((length(ict_seca) - 1) * var(ict_seca) +
+                        (length(ict_húmeda) - 1) * var(ict_húmeda)) /
+                       (length(ict_seca) + length(ict_húmeda) - 2))
+d_cohen <- (mean(ict_seca) - mean(ict_húmeda)) / sd_combinada
+# Probabilidad de superioridad: P(ICT de un día seco > ICT de un día húmedo)
+prob_superioridad <- unname(prueba_w_ict$statistic) /
+  (length(ict_seca) * length(ict_húmeda))
+
+data.frame(
+  Prueba = c("Wilcoxon AT_max", "Wilcoxon ICT", "Fligner-Killeen ICT", "t de Welch ICT"),
+  p = fmt_p(c(prueba_w_at$p.value, prueba_w_ict$p.value,
+              prueba_fligner$p.value, prueba_welch$p.value)))
+cat("d de Cohen:", round(d_cohen, 2),
+    " | Probabilidad de superioridad:", round(prob_superioridad, 3), "\n")
+```
+
+```{r densidad-epocas, fig.height = 4.5}
+ggplot(diario, aes(ICT, fill = Epoca)) +
+  geom_density(alpha = 0.45, color = NA) +
+  geom_vline(data = resumen_epocas,
+             aes(xintercept = ICT_mediana, color = Epoca),
+             linetype = "dashed", linewidth = 0.9, show.legend = FALSE) +
+  scale_fill_manual(values = colores_epoca) +
+  scale_color_manual(values = colores_epoca) +
+  scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 20)) +
+  labs(title = "Distribución del ICT diario por época",
+       subtitle = "Las líneas discontinuas marcan la mediana de cada época",
+       x = "ICT diario", y = "Densidad", fill = "Época") +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+La comparación entre épocas cuantifica la división climática que organiza el resto del análisis. Además del valor p, se reportan dos tamaños del efecto: la d de Cohen, que mide la diferencia de medias en desviaciones estándar, y la probabilidad de superioridad, que es la probabilidad de que un día seco elegido al azar tenga mayor ICT que un día húmedo elegido al azar. Esta segunda medida no supone normalidad y se lee directamente.
+
+**Para el caso de Barranquilla:** la temperatura máxima del aire cambia poco entre épocas (`r fmt(resumen_epocas$TMP_max[1])` °C en la seca y `r fmt(resumen_epocas$TMP_max[2])` °C en la húmeda), pero la AT máxima la supera en `r fmt(resumen_epocas$Exceso_AT[1])` °C en la época seca y en `r fmt(resumen_epocas$Exceso_AT[2])` °C en la húmeda (Wilcoxon, p `r fmt_pt(prueba_w_at$p.value)`). La diferencia coincide principalmente con el contraste de humedad (`r fmt(resumen_epocas$HR_media[1])` % frente a `r fmt(resumen_epocas$HR_media[2])` %) y viento (`r fmt(resumen_epocas$WND_media_kmh[1])` frente a `r fmt(resumen_epocas$WND_media_kmh[2])` km/h). El ICT medio es `r fmt(resumen_epocas$ICT_media[1])` en la época seca y `r fmt(resumen_epocas$ICT_media[2])` en la húmeda (Welch, p `r fmt_pt(prueba_welch$p.value)`; Wilcoxon, p `r fmt_pt(prueba_w_ict$p.value)`), con d = `r fmt(d_cohen, 2)`, `r if (abs(d_cohen) >= 0.8) "un efecto grande según los criterios de Cohen" else if (abs(d_cohen) >= 0.5) "un efecto mediano según los criterios de Cohen" else "un efecto pequeño según los criterios de Cohen"`. Un día seco elegido al azar es más confortable que uno húmedo con probabilidad `r fmt(prob_superioridad, 2)`. `r if (prueba_fligner$p.value < 0.05) paste0("La dispersión también difiere (Fligner-Killeen, p ", fmt_pt(prueba_fligner$p.value), "): la época ", ifelse(resumen_epocas$ICT_DE[1] > resumen_epocas$ICT_DE[2], "seca", "húmeda"), " es más variable.") else paste0("La dispersión es similar en ambas épocas (Fligner-Killeen, p ", fmt_pt(prueba_fligner$p.value), ").")` Como los días consecutivos están correlacionados, los valores p son optimistas, pero un efecto de este tamaño no depende de ese detalle.
