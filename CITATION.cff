@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "Si utiliza este proyecto, cite este repositorio."
+title: "Metodología reproducible en R para el estudio del clima en Barranquilla"
+type: software
+authors:
+  - family-names: "Arias Viloria"
+    given-names: "Joseph"
+    affiliation: "Universidad del Norte"
+  - family-names: "Ariza Grubert"
+    given-names: "Sebastian"
+    affiliation: "Universidad del Norte"
+year: 2026
+license: MIT
+repository-code: "https://github.com/Sealargr/LatinR"
+keywords:
+  - R
+  - confort térmico
+  - temperatura aparente
+  - Steadman
+  - cadenas de Markov
+  - NOAA
+  - Barranquilla

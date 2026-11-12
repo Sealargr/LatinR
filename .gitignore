@@ -41,10 +41,25 @@ vignettes/*.pdf
 .env
 
 # pkgdown site
-docs/
+# docs/ se usa para GitHub Pages, no se ignora
 
 # translation temp files
 po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Datos meteorológicos descargados (NOAA)
+Data/*.csv
+# Conservar instrucciones
+!Data/README.md
+
+# Archivos de R y RStudio
+.Ruserdata
+
+# Archivos temporales de LaTeX y R Markdown
+*.aux
+*.log
+*.out
+*.synctex.gz
+*_files/
