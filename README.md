@@ -25,8 +25,16 @@ automática de tablas, figuras y documentos.
 ## Fuente de datos
 
 Registros horarios de la estación **Ernesto Cortissoz** de la Integrated Surface Database
-(ISD) de NOAA, años 2023, 2024 y 2025. Los CSV no se incluyen; ver
-[`Data/README.md`](Data/README.md) para obtenerlos.
+(ISD) de NOAA, del 1 de enero de 2023 al 24 de agosto de 2025. Los CSV están en
+[`Data/`](Data/); ver [`Data/README.md`](Data/README.md).
+
+## Documentos
+
+| Documento | Contenido |
+| --- | --- |
+| [Resumen escrito](analysis/03_resumen_latinr.md) | La metodología y los resultados en palabras (trabajo #22 de LatinR 2026) |
+| [Metodología completa](analysis/01_metodologia_completa.Rmd) | Todo el análisis reproducible, con código, pruebas y diagnósticos |
+| [Presentación](analysis/02_presentacion_latinr.Rmd) | Versión resumida con lo que se muestra en LatinR |
 
 ## Metodología
 
@@ -94,11 +102,14 @@ LatinR/
 ├── CONTRIBUTING.md
 ├── LatinR.Rproj
 ├── requirements.R
-├── analysis/      # 01_metodologia_completa.Rmd y demás documentos
+├── analysis/
+│   ├── 01_metodologia_completa.Rmd   # Metodología completa
+│   ├── 02_presentacion_latinr.Rmd    # Versión resumida para la presentación
+│   └── 03_resumen_latinr.md          # Resumen escrito (trabajo #22)
 ├── scripts/       # funciones.R: funciones reutilizables que carga el .Rmd
-├── outputs/       # HTML y PDF generados
+├── outputs/       # HTML y PDF generados (resumen.pdf)
 ├── figures/       # Figuras generadas
-├── Data/          # CSV de NOAA (no versionados) e instrucciones
+├── Data/          # CSV de NOAA (2023-2025) y su descripción
 └── docs/          # Página publicada con GitHub Pages
 ```
 
@@ -124,9 +135,9 @@ conserva todo el código sin duplicarlo. El `.Rmd` localiza la raíz del proyect
 # 1. Clonar el repositorio y abrir LatinR.Rproj
 # 2. Instalar los paquetes
 source("requirements.R")
-# 3. Guardar Data2023.csv, Data2024.csv y Data2025.csv en Data/
-# 4. Compilar el análisis (desde la raíz del proyecto)
+# 3. Compilar la metodología completa y la presentación
 rmarkdown::render("analysis/01_metodologia_completa.Rmd", output_dir = "outputs")
+rmarkdown::render("analysis/02_presentacion_latinr.Rmd", output_dir = "outputs")
 ```
 
 ## Autores

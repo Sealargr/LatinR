@@ -1,0 +1,381 @@
+---
+title: "Metodología reproducible en R para el estudio del clima en Barranquilla mediante la ciencia de datos"
+subtitle: "Temperatura aparente de Steadman, Índice de Confort Térmico y cadenas de Markov"
+author: "Joseph Arias Viloria y Sebastian Ariza Grubert"
+date: "LatinR 2026"
+output:
+  html_document:
+    toc: false
+    number_sections: false
+    code_folding: none
+---
+
+<style>
+body { font-size: 17px; line-height: 1.55; }
+h1.title { font-size: 30px; }
+h2 { color: #1f4e79; margin-top: 38px; border-bottom: 2px solid #e3e9f0; padding-bottom: 4px; }
+pre { font-size: 14px; }
+.formula { background: #fafafa; border: 1px solid #e3e9f0; border-radius: 6px; padding: 4px 12px; margin: 10px 0; }
+.mensaje { background: #f3f7fb; border-left: 5px solid #1f4e79; padding: 10px 16px; margin: 14px 0; }
+</style>
+
+```{r configuracion, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      comment = NA, fig.align = "center",
+                      fig.width = 8.5, fig.height = 4, dpi = 110)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Raíz del proyecto (carpeta con LatinR.Rproj): el .Rmd vive en analysis/,
+# pero los datos se leen desde Data/ en la raíz.
+raiz <- normalizePath(getwd())
+while (!file.exists(file.path(raiz, "LatinR.Rproj"))) {
+  if (dirname(raiz) == raiz) stop("No se encontró LatinR.Rproj; compile dentro del proyecto.")
+  raiz <- dirname(raiz)
+}
+knitr::opts_knit$set(root.dir = raiz)
+
+fmt <- function(x, d = 1) formatC(as.numeric(x), format = "f", digits = d,
+                                  big.mark = ".", decimal.mark = ",")
+fmt_p <- function(p) ifelse(p < 0.001, "< 0,001", paste("=", fmt(p, 3)))
+meses_es <- c("Ene", "Feb", "Mar", "Abr", "May", "Jun",
+              "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")
+meses_completos <- c("enero", "febrero", "marzo", "abril", "mayo", "junio",
+                     "julio", "agosto", "septiembre", "octubre",
+                     "noviembre", "diciembre")
+colores_epoca <- c(Seca = "#E6550D", Humeda = "#3182BD")
+etiquetas_epoca <- c(Seca = "Seca (dic–abr)", Humeda = "Húmeda (may–nov)")
+tema <- theme_minimal(base_size = 13) +
+  theme(legend.position = "top", panel.grid.minor = element_blank())
+```
+
+```{r procesamiento-noaa, include=FALSE}
+# Importación, validación y limpieza de los archivos NOAA (detalle en el informe completo).
+cargar_noaa <- function(path) {
+  n_campos <- count.fields(path, sep = ",", quote = "\"")[1]
+  if (n_campos <= 2) {
+    lineas <- readLines(path, warn = FALSE, encoding = "UTF-8")
+    lineas <- gsub('""', '"', gsub('^"|"$', "", lineas), fixed = TRUE)
+    conexion <- textConnection(lineas)
+    on.exit(close(conexion), add = TRUE)
+    df <- read.csv(conexion, stringsAsFactors = FALSE, quote = "\"",
+                   check.names = FALSE)
+  } else {
+    df <- read.csv(path, stringsAsFactors = FALSE, quote = "\"",
+                   check.names = FALSE)
+  }
+  names(df) <- trimws(toupper(names(df)))
+  df[, c("DATE", "TMP", "DEW", "WND")]
+}
+limpiar_temperatura <- function(x) {
+  v <- suppressWarnings(as.numeric(sub(",.*", "", trimws(as.character(x)))))
+  v[v %in% c(9999, 99999)] <- NA
+  v <- v / 10
+  v[v < -80 | v > 60] <- NA
+  v
+}
+limpiar_viento <- function(x) {
+  partes <- strsplit(as.character(x), ",", fixed = TRUE)
+  v <- suppressWarnings(as.numeric(vapply(partes, function(z)
+    if (length(z) >= 4) z[4] else NA_character_, character(1))))
+  v[v == 9999] <- NA
+  v <- v / 10
+  v[v < 0 | v > 100] <- NA
+  v
+}
+promedio <- function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+
+rutas <- list.files("Data", pattern = "^Data[0-9]{4}\\.csv$", full.names = TRUE)
+datos <- bind_rows(lapply(rutas, cargar_noaa)) %>%
+  mutate(DATE = as.POSIXct(DATE, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
+         TMP = limpiar_temperatura(TMP), DEW = limpiar_temperatura(DEW),
+         WND = limpiar_viento(WND)) %>%
+  filter(!is.na(DATE))
+n_registros <- nrow(datos)
+```
+
+```{r humedad-hora-local, include=FALSE}
+datos <- datos %>%
+  mutate(HR = pmin(pmax(100 * exp(17.625 * DEW / (243.04 + DEW) -
+                                    17.625 * TMP / (243.04 + TMP)), 0), 100),
+         HORA_LOCAL = as.POSIXct(format(DATE, "%Y-%m-%d %H:00:00",
+                                        tz = "America/Bogota"),
+                                 tz = "America/Bogota"))
+horario <- datos %>%
+  group_by(HORA_LOCAL) %>%
+  summarise(TMP = promedio(TMP), HR = promedio(HR), WND = promedio(WND),
+            .groups = "drop") %>%
+  mutate(Fecha = as.Date(format(HORA_LOCAL, "%Y-%m-%d", tz = "America/Bogota")),
+         Hora = as.integer(format(HORA_LOCAL, "%H", tz = "America/Bogota")),
+         Numero_mes = as.integer(format(Fecha, "%m")),
+         Mes = factor(meses_es[Numero_mes], levels = meses_es),
+         Epoca = factor(ifelse(Numero_mes %in% c(12, 1:4), "Seca", "Humeda"),
+                        levels = c("Seca", "Humeda")))
+
+meteorologia_diaria <- horario %>%
+  group_by(Fecha) %>%
+  summarise(across(c(TMP, HR, WND), ~ sum(!is.na(.x)), .names = "h_{.col}"),
+            TMP_media = mean(TMP, na.rm = TRUE), TMP_max = max(TMP, na.rm = TRUE),
+            HR_media = mean(HR, na.rm = TRUE), WND_media = mean(WND, na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(h_TMP >= 18, h_HR >= 18, h_WND >= 18) %>%
+  mutate(Mes = factor(meses_es[as.integer(format(Fecha, "%m"))], levels = meses_es))
+```
+
+## 1. Problema y objetivo
+
+En Barranquilla la temperatura del aire cambia relativamente poco durante el año, pero la humedad y el viento cambian mucho, y con ellos la sensación térmica. Por eso el termómetro, por sí solo, no describe la carga térmica que se experimenta.
+
+<div class="mensaje">
+**Objetivo:** construir en R un Índice de Confort Térmico (ICT) reproducible para analizar cómo varía el confort en Barranquilla y cómo cambia de un día al siguiente.
+</div>
+
+## 2. Datos y metodología reproducible en R
+
+Los `r fmt(n_registros, 0)` registros horarios de NOAA (estación Ernesto Cortissoz, 2023–2025) se importaron, validaron y procesaron automáticamente en R: se limpiaron los códigos de NOAA, se convirtieron las unidades y se eliminaron valores inválidos. Todo el análisis necesita solo **tres paquetes** además de R base; importación, limpieza, Steadman, pruebas estadísticas y Markov usan funciones de R base:
+
+```{r, echo=TRUE, eval=FALSE}
+library(dplyr); library(tidyr); library(ggplot2)
+```
+
+Luego se pasó a hora local y se calculó la humedad relativa con la ecuación de Magnus, a partir de la temperatura ($\mathrm{TMP}$) y el punto de rocío ($\mathrm{DEW}$), en °C:
+
+<div class="formula">
+$$
+\mathrm{HR} = 100\,\exp\!\left[\frac{17{,}625\,\mathrm{DEW}}{243{,}04+\mathrm{DEW}}-\frac{17{,}625\,\mathrm{TMP}}{243{,}04+\mathrm{TMP}}\right]
+$$
+</div>
+
+En R, la misma fórmula se aplica a todas las horas a la vez:
+
+```{r, echo=TRUE, eval=FALSE}
+HR <- 100 * exp(17.625 * DEW / (243.04 + DEW) - 17.625 * TMP / (243.04 + TMP))
+```
+
+Se conservaron solo los días con al menos 18 horas válidas, para no construir resúmenes diarios con información insuficiente. Las variables no fueron normales, así que se usaron métodos no paramétricos (Spearman, Kendall, Wilcoxon y Kruskal-Wallis).
+
+```{r patrones-mensuales, fig.height = 3.6}
+normalizar <- function(x) 100 * (x - min(x)) / (max(x) - min(x))
+rho_hr_wnd <- cor(meteorologia_diaria$HR_media, meteorologia_diaria$WND_media,
+                  method = "spearman")
+meteorologia_diaria %>%
+  group_by(Mes) %>%
+  summarise(Temperatura = mean(TMP_media), Humedad = mean(HR_media),
+            Viento = mean(WND_media), .groups = "drop") %>%
+  pivot_longer(-Mes, names_to = "Variable", values_to = "Valor") %>%
+  group_by(Variable) %>%
+  mutate(Nivel = normalizar(Valor)) %>%
+  ggplot(aes(Mes, Nivel, color = Variable, group = Variable)) +
+  annotate("rect", xmin = 4.5, xmax = 11.5, ymin = -Inf, ymax = Inf,
+           fill = colores_epoca["Humeda"], alpha = 0.08) +
+  geom_line(linewidth = 1.2) + geom_point(size = 2.4) +
+  scale_color_manual(values = c(Humedad = "#3182BD", Temperatura = "#D95F02",
+                                Viento = "#31A354")) +
+  labs(title = "Patrones meteorológicos mensuales",
+       subtitle = "Escala 0–100 por variable: compara la forma de los ciclos. Franja azul: época húmeda",
+       x = NULL, y = "Nivel relativo", color = NULL) + tema
+```
+
+Cada variable se llevó a una escala de 0 a 100 con $N = 100\,\dfrac{x - x_{\min}}{x_{\max} - x_{\min}}$, donde $x$ es su promedio mensual.
+
+La relación más marcada fue entre humedad y viento (Spearman = `r fmt(rho_hr_wnd, 2)`): los periodos más húmedos tienen menos ventilación. Este contraste define dos épocas: la **seca**, de diciembre a abril, y la **húmeda**, de mayo a noviembre. El patrón se repite en los tres años, aunque cambia su intensidad.
+
+## 3. Steadman e ICT
+
+Se evaluaron PCA y análisis factorial, pero producían un índice sin el sentido físico requerido. Por eso se eligió la temperatura aparente de Steadman (AT), que integra temperatura, presión de vapor y viento, sin tener en cuenta la radiación solar:
+
+<div class="formula">
+$$
+\begin{aligned}
+e &= \frac{\mathrm{HR}}{100}\cdot 6{,}105\,\exp\!\left(\frac{17{,}27\,\mathrm{TMP}}{237{,}7+\mathrm{TMP}}\right)\\[4pt]
+\mathrm{AT} &= \mathrm{TMP} + 0{,}33\,e - 0{,}70\,\mathrm{WND} - 4
+\end{aligned}
+$$
+</div>
+
+donde $e$ es la presión de vapor (hPa) y $\mathrm{WND}$ la velocidad del viento (m/s). En R:
+
+```{r, echo=TRUE, eval=FALSE}
+e  <- (HR / 100) * 6.105 * exp(17.27 * TMP / (237.7 + TMP))   # presión de vapor
+AT <- TMP + 0.33 * e - 0.70 * WND - 4
+```
+
+Más temperatura y más humedad elevan la AT; más viento la reduce. Para cada día $d$ se toma la AT máxima, $\mathrm{AT}_{\max,d}$, el momento de mayor carga térmica, y se invierte en una escala de 0 a 100:
+
+<div class="formula">
+$$
+\mathrm{ICT}_d = 100\cdot\frac{\mathrm{AT}_{\max}^{(\max)} - \mathrm{AT}_{\max,d}}{\mathrm{AT}_{\max}^{(\max)} - \mathrm{AT}_{\max}^{(\min)}}
+$$
+</div>
+
+donde $\mathrm{AT}_{\max}^{(\max)}$ y $\mathrm{AT}_{\max}^{(\min)}$ son la mayor y la menor AT máxima diaria del periodo. En R:
+
+```{r, echo=TRUE, eval=FALSE}
+ICT <- 100 * (max(AT_max) - AT_max) / (max(AT_max) - min(AT_max))
+```
+
+Un ICT alto significa más confort relativo dentro del periodo analizado; un ICT bajo, más carga térmica.
+
+```{r steadman-ict}
+horario <- horario %>%
+  mutate(e = (HR / 100) * 6.105 * exp(17.27 * TMP / (237.7 + TMP)),
+         AT = TMP + 0.33 * e - 0.70 * WND - 4)
+diario <- horario %>%
+  group_by(Fecha) %>%
+  summarise(Horas = sum(!is.na(AT)),
+            AT_max = if (Horas > 0) max(AT, na.rm = TRUE) else NA_real_,
+            TMP_max = max(TMP, na.rm = TRUE), HR_media = mean(HR, na.rm = TRUE),
+            WND_media = mean(WND, na.rm = TRUE),
+            Mes = first(Mes), Epoca = first(Epoca), .groups = "drop") %>%
+  filter(Horas >= 18, is.finite(TMP_max), !is.na(HR_media), !is.na(WND_media)) %>%
+  arrange(Fecha)
+diario$ICT <- 100 * (max(diario$AT_max) - diario$AT_max) /
+  (max(diario$AT_max) - min(diario$AT_max))
+```
+
+## 4. Resultado temporal
+
+```{r mapa-calor, fig.height = 4.2}
+horario %>%
+  filter(!is.na(AT)) %>%
+  group_by(Mes, Hora) %>%
+  summarise(AT = mean(AT), .groups = "drop") %>%
+  ggplot(aes(Hora, Mes, fill = AT)) +
+  geom_tile(color = "white", linewidth = 0.15) +
+  scale_y_discrete(limits = rev(meses_es)) +
+  scale_x_continuous(breaks = seq(0, 23, 2), expand = c(0, 0)) +
+  scale_fill_gradient(low = "#F7FBFF", high = "#CB181D") +
+  labs(title = "Temperatura aparente media por mes y hora",
+       x = "Hora local", y = NULL, fill = "AT (°C)") +
+  theme_minimal(base_size = 13) + theme(panel.grid = element_blank())
+```
+
+La mayor temperatura aparente se concentra aproximadamente entre las 11:00 y las 14:00, sobre todo en los meses húmedos.
+
+```{r ict-mensual, fig.height = 3.8}
+medianas <- diario %>% group_by(Mes) %>% summarise(Mediana = median(ICT), .groups = "drop")
+mes_max <- meses_completos[which.max(medianas$Mediana)]
+mes_min <- meses_completos[which.min(medianas$Mediana)]
+ggplot(diario, aes(Mes, ICT, fill = Epoca)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  scale_fill_manual(values = colores_epoca, labels = etiquetas_epoca) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 20)) +
+  labs(title = "ICT diario por mes", x = NULL, y = "ICT", fill = NULL) + tema
+```
+
+<div class="mensaje">
+El mayor confort relativo se concentra al comienzo del año, con el máximo en **`r mes_max`** (mediana `r fmt(max(medianas$Mediana))`). El ICT baja en los meses centrales, llega a su mínimo en **`r mes_min`** (mediana `r fmt(min(medianas$Mediana))`) y se recupera hacia noviembre y diciembre.
+</div>
+
+## 5. Contraste entre épocas
+
+```{r contraste-epocas}
+resumen <- diario %>%
+  group_by(Epoca) %>%
+  summarise(TMP_max = mean(TMP_max), HR = mean(HR_media),
+            WND = mean(3.6 * WND_media), AT_max = mean(AT_max),
+            ICT = mean(ICT), .groups = "drop")
+w <- wilcox.test(ICT ~ Epoca, data = diario, exact = FALSE)
+prob_sup <- unname(w$statistic) /
+  (sum(diario$Epoca == "Seca") * sum(diario$Epoca == "Humeda"))
+v <- function(col, e) resumen[[col]][resumen$Epoca == e]
+
+tabla <- data.frame(
+  Variable = c("Temperatura máxima del aire (°C)", "Humedad relativa media (%)",
+               "Viento medio (km/h)", "Temperatura aparente máxima (°C)", "ICT medio"),
+  Seca = fmt(c(v("TMP_max", "Seca"), v("HR", "Seca"), v("WND", "Seca"),
+               v("AT_max", "Seca"), v("ICT", "Seca"))),
+  Húmeda = fmt(c(v("TMP_max", "Humeda"), v("HR", "Humeda"), v("WND", "Humeda"),
+                 v("AT_max", "Humeda"), v("ICT", "Humeda")))
+)
+knitr::kable(tabla, align = c("l", "c", "c"))
+```
+
+```{r densidad-epocas, fig.height = 3.3}
+ggplot(diario, aes(ICT, fill = Epoca)) +
+  geom_density(alpha = 0.5, color = NA) +
+  scale_fill_manual(values = colores_epoca, labels = etiquetas_epoca) +
+  scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 20)) +
+  labs(x = "ICT diario", y = "Densidad", fill = NULL) + tema
+```
+
+<div class="mensaje">
+La temperatura del aire cambia poco entre épocas (`r fmt(v("TMP_max", "Seca"))` frente a `r fmt(v("TMP_max", "Humeda"))` °C). En la época húmeda aumenta la humedad y baja el viento, sube la temperatura aparente y cae el ICT. Un día seco elegido al azar es más confortable que uno húmedo con probabilidad **`r fmt(prob_sup, 2)`** (Wilcoxon, p `r fmt_p(w$p.value)`).
+</div>
+
+## 6. Cadenas de Markov por época
+
+El ICT se dividió en tres estados (**bajo**, **medio** y **alto**) con los terciles globales $Q_{1/3}$ y $Q_{2/3}$, para que cada estado signifique lo mismo en las dos épocas:
+
+<div class="formula">
+$$
+X_d =
+\begin{cases}
+\text{Bajo}, & \mathrm{ICT}_d \le Q_{1/3}\\
+\text{Medio}, & Q_{1/3} < \mathrm{ICT}_d \le Q_{2/3}\\
+\text{Alto}, & \mathrm{ICT}_d > Q_{2/3}
+\end{cases}
+$$
+</div>
+
+Con los mismos cortes se estimó una cadena por época, contando solo transiciones entre días consecutivos. Cada entrada de la matriz es la proporción de días en el estado $j$ seguidos de un día en el estado $k$:
+
+<div class="formula">
+$$
+\hat p_{jk} = P(X_{d+1}=k \mid X_d=j) = \frac{n_{jk}}{\sum_{k} n_{jk}}
+$$
+</div>
+
+En R, `table()` cuenta las transiciones $n_{jk}$ y `prop.table()` divide cada fila por su total:
+
+```{r, echo=TRUE, eval=FALSE}
+ok <- diff(as.numeric(Fecha)) == 1                        # solo días consecutivos
+P  <- prop.table(table(Hoy = estado[-n][ok], Manana = estado[-1][ok]), 1)
+```
+
+```{r markov}
+cortes <- quantile(diario$ICT, c(0, 1/3, 2/3, 1))
+diario$Estado <- cut(diario$ICT, cortes, labels = c("Bajo", "Medio", "Alto"),
+                     include.lowest = TRUE, ordered_result = TRUE)
+cadena <- function(x) {
+  x <- x[order(x$Fecha), ]
+  ok <- diff(as.numeric(x$Fecha)) == 1
+  conteos <- table(Desde = x$Estado[-nrow(x)][ok], Hacia = x$Estado[-1][ok])
+  list(conteos = conteos, P = prop.table(conteos, 1))
+}
+m_seca <- cadena(filter(diario, Epoca == "Seca"))
+m_hum <- cadena(filter(diario, Epoca == "Humeda"))
+
+# Prueba de homogeneidad (razón de verosimilitud) entre las dos matrices
+P_comun <- prop.table(m_seca$conteos + m_hum$conteos, 1)
+G2 <- 2 * sum(sapply(list(m_seca, m_hum), function(m) {
+  ok <- m$conteos > 0
+  sum(m$conteos[ok] * log(m$P[ok] / P_comun[ok]))
+}))
+p_homogeneidad <- pchisq(G2, df = 6, lower.tail = FALSE)
+```
+
+```{r matrices, fig.height = 3.3}
+bind_rows(Seca = as.data.frame(m_seca$P), Húmeda = as.data.frame(m_hum$P),
+          .id = "Epoca") %>%
+  mutate(Epoca = factor(Epoca, levels = c("Seca", "Húmeda")),
+         Desde = factor(Desde, levels = rev(c("Bajo", "Medio", "Alto")))) %>%
+  ggplot(aes(Hacia, Desde, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = fmt(Freq, 2)), size = 4.5) +
+  facet_wrap(~ Epoca) +
+  scale_fill_gradient(low = "#F7FBFF", high = "#08519C", limits = c(0, 1),
+                      guide = "none") +
+  labs(title = "Probabilidad de pasar del estado de hoy al de mañana",
+       x = "Mañana", y = "Hoy") +
+  theme_minimal(base_size = 13) + theme(panel.grid = element_blank())
+```
+
+<div class="mensaje">
+En la época seca predomina y persiste el confort alto (se repite con probabilidad `r fmt(m_seca$P["Alto", "Alto"], 2)`); en la húmeda, el confort bajo (`r fmt(m_hum$P["Bajo", "Bajo"], 2)`). Los saltos directos entre extremos son poco frecuentes, así que los cambios suelen pasar por el estado medio. Una prueba de homogeneidad confirmó que las matrices difieren entre épocas (p `r fmt_p(p_homogeneidad)`): una sola cadena anual ocultaría dos comportamientos distintos. La cadena de primer orden es una aproximación interpretable del cambio diario, aunque no captura toda la memoria de la serie.
+</div>
+
+## Conclusión
+
+R permitió integrar todo el proceso, desde los datos crudos de NOAA hasta las cadenas de Markov, en una metodología reproducible y actualizable: cada cifra de este documento se calcula al tejerlo. En Barranquilla, la temperatura del aire cambia poco, pero la combinación de humedad y viento genera un ciclo de confort claro, y las cadenas de Markov muestran que su persistencia cambia entre la época seca y la húmeda.
