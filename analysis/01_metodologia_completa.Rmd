@@ -973,3 +973,616 @@ ggplot(diario, aes(ICT, fill = Epoca)) +
 La comparación entre épocas cuantifica la división climática que organiza el resto del análisis. Además del valor p, se reportan dos tamaños del efecto: la d de Cohen, que mide la diferencia de medias en desviaciones estándar, y la probabilidad de superioridad, que es la probabilidad de que un día seco elegido al azar tenga mayor ICT que un día húmedo elegido al azar. Esta segunda medida no supone normalidad y se lee directamente.
 
 **Para el caso de Barranquilla:** la temperatura máxima del aire cambia poco entre épocas (`r fmt(resumen_epocas$TMP_max[1])` °C en la seca y `r fmt(resumen_epocas$TMP_max[2])` °C en la húmeda), pero la AT máxima la supera en `r fmt(resumen_epocas$Exceso_AT[1])` °C en la época seca y en `r fmt(resumen_epocas$Exceso_AT[2])` °C en la húmeda (Wilcoxon, p `r fmt_pt(prueba_w_at$p.value)`). La diferencia coincide principalmente con el contraste de humedad (`r fmt(resumen_epocas$HR_media[1])` % frente a `r fmt(resumen_epocas$HR_media[2])` %) y viento (`r fmt(resumen_epocas$WND_media_kmh[1])` frente a `r fmt(resumen_epocas$WND_media_kmh[2])` km/h). El ICT medio es `r fmt(resumen_epocas$ICT_media[1])` en la época seca y `r fmt(resumen_epocas$ICT_media[2])` en la húmeda (Welch, p `r fmt_pt(prueba_welch$p.value)`; Wilcoxon, p `r fmt_pt(prueba_w_ict$p.value)`), con d = `r fmt(d_cohen, 2)`, `r if (abs(d_cohen) >= 0.8) "un efecto grande según los criterios de Cohen" else if (abs(d_cohen) >= 0.5) "un efecto mediano según los criterios de Cohen" else "un efecto pequeño según los criterios de Cohen"`. Un día seco elegido al azar es más confortable que uno húmedo con probabilidad `r fmt(prob_superioridad, 2)`. `r if (prueba_fligner$p.value < 0.05) paste0("La dispersión también difiere (Fligner-Killeen, p ", fmt_pt(prueba_fligner$p.value), "): la época ", ifelse(resumen_epocas$ICT_DE[1] > resumen_epocas$ICT_DE[2], "seca", "húmeda"), " es más variable.") else paste0("La dispersión es similar en ambas épocas (Fligner-Killeen, p ", fmt_pt(prueba_fligner$p.value), ").")` Como los días consecutivos están correlacionados, los valores p son optimistas, pero un efecto de este tamaño no depende de ese detalle.
+
+# 9. Ciclo anual armónico
+
+\[
+ICT_t = \beta_0 +
+\beta_1\sin\left(\frac{2\pi t}{365.25}\right) +
+\beta_2\cos\left(\frac{2\pi t}{365.25}\right) +
+\varepsilon_t.
+\]
+
+```{r modelo-armonico-ict}
+diario <- diario %>%
+  # t se mide desde el 1 de enero del primer año para que la fase sea un día del año.
+  mutate(t = as.numeric(Fecha - as.Date(paste0(min(Anio), "-01-01"))),
+         seno_anual = sin(2 * pi * t / 365.25),
+         coseno_anual = cos(2 * pi * t / 365.25))
+modelo_armonico <- lm(ICT ~ seno_anual + coseno_anual, data = diario)
+resumen_modelo_armonico <- summary(modelo_armonico)
+resumen_modelo_armonico
+amplitud_anual <- sqrt(coef(modelo_armonico)["seno_anual"]^2 +
+                         coef(modelo_armonico)["coseno_anual"]^2)
+fase_maximo <- atan2(coef(modelo_armonico)["seno_anual"],
+                     coef(modelo_armonico)["coseno_anual"])
+dia_maximo_ict <- (fase_maximo * 365.25 / (2 * pi)) %% 365.25
+dia_minimo_ict <- (dia_maximo_ict + 365.25 / 2) %% 365.25
+diario$ICT_armonico <- predict(modelo_armonico)
+cat("Amplitud anual estimada del ICT:", round(amplitud_anual, 3), "\n")
+cat("Día aproximado del ciclo anual con mayor ICT:", round(dia_maximo_ict, 1), "\n")
+cat("Día aproximado del ciclo anual con menor ICT:", round(dia_minimo_ict, 1), "\n")
+cat("R² del modelo armónico:", round(resumen_modelo_armonico$r.squared, 3), "\n")
+```
+
+```{r grafico-modelo-armonico}
+franjas_secas <- data.frame(Anio = (min(diario$Anio) - 1):max(diario$Anio)) %>%
+  mutate(inicio = pmax(as.Date(paste0(Anio, "-12-01")), min(diario$Fecha)),
+         fin = pmin(as.Date(paste0(Anio + 1, "-04-30")), max(diario$Fecha))) %>%
+  filter(inicio < fin)
+ggplot(diario, aes(Fecha, ICT)) +
+  geom_rect(data = franjas_secas, inherit.aes = FALSE,
+            aes(xmin = inicio, xmax = fin, ymin = 0, ymax = 100),
+            fill = colores_epoca["Seca"], alpha = 0.10) +
+  geom_line(color = "grey65", linewidth = 0.35, na.rm = TRUE) +
+  geom_line(aes(y = ICT_armonico), color = "#CB181D",
+            linewidth = 1, na.rm = TRUE) +
+  scale_y_continuous(breaks = seq(0, 100, 20),
+                     expand = expansion(mult = c(0, 0))) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(title = "ICT diario y ciclo anual armónico",
+       subtitle = "Franjas naranjas: época seca (diciembre a abril)",
+       x = "Fecha", y = "ICT") +
+  theme_minimal()
+```
+
+El modelo armónico representa el componente anual mediante términos seno y coseno. La amplitud cuantifica la oscilación media, la fase ubica los extremos del ciclo y el R² indica la proporción de variación diaria representada por esta forma anual suave.
+
+```{r aux-armonico, include=FALSE}
+fecha_dia <- function(d) {
+  f <- as.Date("2023-01-01") + round(d) - 1
+  paste(as.integer(format(f, "%d")), "de", meses_completos[as.integer(format(f, "%m"))])
+}
+```
+
+**Para el caso de Barranquilla:** el modelo estimó un nivel medio de `r fmt(coef(modelo_armonico)[1])` y una amplitud de `r fmt(amplitud_anual, 2)` puntos. El máximo se ubicó alrededor del día `r round(dia_maximo_ict)` (`r fecha_dia(dia_maximo_ict)`) y el mínimo alrededor del día `r round(dia_minimo_ict)` (`r fecha_dia(dia_minimo_ict)`). El ciclo explicó `r fmt(100 * resumen_modelo_armonico$r.squared)` % de la variabilidad diaria.
+
+## 9.1. Segundo armónico
+
+Un solo armónico obliga a que el ciclo sea simétrico: la bajada y la subida duran lo mismo. Un segundo armónico, con periodo de medio año, permite que la caída del confort sea más lenta o más rápida que su recuperación. La prueba F compara los dos modelos anidados.
+
+```{r segundo-armonico}
+diario <- diario %>%
+  mutate(seno_semestral = sin(4 * pi * t / 365.25),
+         coseno_semestral = cos(4 * pi * t / 365.25))
+modelo_armonico2 <- lm(ICT ~ seno_anual + coseno_anual +
+                         seno_semestral + coseno_semestral, data = diario)
+comparacion_armonicos <- anova(modelo_armonico, modelo_armonico2)
+comparacion_armonicos
+r2_armonico1 <- summary(modelo_armonico)$r.squared
+r2_armonico2 <- summary(modelo_armonico2)$r.squared
+diario$ICT_armonico2 <- predict(modelo_armonico2)
+
+curvas_armonicas <- data.frame(Dia = 1:365) %>%
+  mutate(t = Dia - 1,
+         seno_anual = sin(2 * pi * t / 365.25), coseno_anual = cos(2 * pi * t / 365.25),
+         seno_semestral = sin(4 * pi * t / 365.25), coseno_semestral = cos(4 * pi * t / 365.25))
+curvas_armonicas$`Un armónico` <- predict(modelo_armonico, newdata = curvas_armonicas)
+curvas_armonicas$`Dos armónicos` <- predict(modelo_armonico2, newdata = curvas_armonicas)
+dia_max2 <- curvas_armonicas$Dia[which.max(curvas_armonicas$`Dos armónicos`)]
+dia_min2 <- curvas_armonicas$Dia[which.min(curvas_armonicas$`Dos armónicos`)]
+
+mediana_dia <- diario %>% group_by(Dia_anio) %>% summarise(ICT = median(ICT), .groups = "drop")
+curvas_armonicas %>%
+  select(Dia, `Un armónico`, `Dos armónicos`) %>%
+  pivot_longer(-Dia, names_to = "Modelo", values_to = "ICT") %>%
+  ggplot(aes(Dia, ICT)) +
+  geom_point(data = mediana_dia, aes(Dia_anio, ICT), inherit.aes = FALSE,
+             color = "grey70", size = 0.9) +
+  geom_line(aes(color = Modelo), linewidth = 1.1) +
+  scale_color_manual(values = c(`Un armónico` = "#CB181D", `Dos armónicos` = "#2171B5")) +
+  scale_x_continuous(breaks = c(1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335),
+                     labels = meses_es) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(title = "Ciclo anual del ICT con uno y dos armónicos",
+       subtitle = "Puntos grises: mediana del ICT para cada día del año",
+       x = NULL, y = "ICT", color = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+**Para el caso de Barranquilla:** el segundo armónico elevó el R² de `r fmt(r2_armonico1, 3)` a `r fmt(r2_armonico2, 3)` (F = `r fmt(comparacion_armonicos$F[2], 2)`, p `r fmt_pt(comparacion_armonicos[2, "Pr(>F)"])`). Con dos armónicos el máximo se ubica el `r fecha_dia(dia_max2)` y el mínimo el `r fecha_dia(dia_min2)`. `r if (comparacion_armonicos[2, "Pr(>F)"] < 0.05) "El ciclo no es simétrico: el componente semestral recoge una forma que un solo seno no captura, aunque la mayor parte de la variabilidad diaria sigue sin ser explicada por el calendario." else "El ciclo puede describirse con un solo armónico."`
+
+# 10. Dependencia temporal y tendencia descriptiva
+
+## 10.1. Serie temporal y autocorrelación
+
+```{r comportamiento-temporal-ict}
+calendario <- data.frame(
+  Fecha = seq(min(diario$Fecha), max(diario$Fecha), by = "day")
+) %>%
+  left_join(select(diario, Fecha, ICT), by = "Fecha")
+plot(calendario$Fecha, calendario$ICT, type = "l", col = "steelblue",
+     ylim = c(0, 100), xlab = "Fecha", ylab = "ICT diario",
+     main = "Comportamiento temporal del ICT")
+cat("Días sin ICT válido:", sum(is.na(calendario$ICT)), "\n")
+```
+
+La serie temporal permite examinar conjuntamente el ciclo anual, la variabilidad diaria y la continuidad de las observaciones.
+
+**Para el caso de Barranquilla:** se observan niveles relativamente altos al comienzo de cada año y descensos durante la parte central, acompañados de variabilidad diaria considerable. El calendario contiene `r sum(is.na(calendario$ICT))` días sin ICT válido.
+
+```{r autocorrelacion-ict}
+acf_ict <- acf(calendario$ICT, lag.max = 30, na.action = na.pass,
+               main = "Autocorrelación del ICT diario")
+```
+
+La ACF cuantifica la semejanza entre el ICT diario y sus rezagos. Valores positivos altos en los primeros rezagos indican persistencia, mientras una disminución lenta refleja estructura temporal de mayor alcance.
+
+**Para el caso de Barranquilla:** la autocorrelación de un día fue `r fmt(acf_ict$acf[2], 2)` y disminuyó gradualmente, pero todavía era `r fmt(acf_ict$acf[31], 2)` a 30 días. Los días próximos tienden a presentar niveles semejantes y parte de la estructura mensual permanece visible durante varias semanas.
+
+## 10.2. Calendario del ICT
+
+```{r calendario-ict, fig.height = 7.5}
+calendario_mapa <- calendario %>%
+  mutate(Anio = as.integer(format(Fecha, "%Y")),
+         Mes = factor(meses_es[as.integer(format(Fecha, "%m"))], levels = meses_es),
+         Dia = as.integer(format(Fecha, "%d")))
+ggplot(calendario_mapa, aes(Dia, Mes, fill = ICT)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  facet_wrap(~ Anio, ncol = 1) +
+  scale_y_discrete(limits = rev(meses_es)) +
+  scale_x_continuous(breaks = c(1, 5, 10, 15, 20, 25, 31), expand = c(0, 0)) +
+  scale_fill_gradientn(colors = c("#B2182B", "#F4A582", "#F7F7F7", "#92C5DE", "#2166AC"),
+                       limits = c(0, 100), na.value = "grey85") +
+  labs(title = "Calendario del ICT diario",
+       subtitle = "Rojo: menor confort relativo; azul: mayor confort; gris: sin dato",
+       x = "Día del mes", y = NULL, fill = "ICT") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(), legend.position = "right")
+```
+
+El calendario muestra cada día como una celda. A diferencia de la serie temporal, permite ver a la vez el ciclo anual (de arriba abajo), los episodios de varios días (bloques horizontales del mismo color) y las diferencias entre años (paneles).
+
+**Para el caso de Barranquilla:** los primeros meses de cada año aparecen dominados por tonos azules y la parte central por tonos rojos, pero dentro de cada mes hay bloques de varios días seguidos con colores parecidos. Esa agrupación es la persistencia que mide la autocorrelación y que luego modela la cadena de Markov. Los huecos grises son los `r sum(is.na(calendario$ICT))` días sin dato válido.
+
+## 10.3. Tendencia descriptiva
+
+```{r tendencia-descriptiva-ict}
+modelo_tendencia <- lm(ICT ~ as.numeric(Fecha), data = diario)
+pendiente_anual <- coef(modelo_tendencia)[2] * 365.25
+mann_kendall <- cor.test(as.numeric(diario$Fecha), diario$ICT,
+                         method = "kendall", exact = FALSE)
+diario$ICT_anomalia_mensual <- diario$ICT - ave(diario$ICT, diario$Mes)
+mann_kendall_anomalia <- cor.test(
+  as.numeric(diario$Fecha), diario$ICT_anomalia_mensual,
+  method = "kendall", exact = FALSE)
+cat("Pendiente descriptiva anual:", round(pendiente_anual, 3), "\n")
+mann_kendall
+mann_kendall_anomalia
+```
+
+La tendencia descriptiva se resume mediante una pendiente lineal y la correlación de Kendall, tanto sobre el ICT original como sobre anomalías mensuales. Las anomalías reducen el efecto del ciclo mensual recurrente.
+
+**Para el caso de Barranquilla:** la pendiente fue de `r fmt(pendiente_anual, 3)` puntos de ICT por año. Kendall mostró asociaciones temporales `r ifelse(mann_kendall$estimate < 0, "negativas", "positivas")` débiles para el ICT original (tau = `r fmt(mann_kendall$estimate, 3)`; p `r fmt_pt(mann_kendall$p.value)`) y para las anomalías mensuales (tau = `r fmt(mann_kendall_anomalia$estimate, 3)`; p `r fmt_pt(mann_kendall_anomalia$p.value)`). El resultado describe el periodo observado; la magnitud es pequeña y tres años no permiten establecer una tendencia climática de largo plazo.
+
+# 11. Estados y cadena de Markov
+
+```{r discretizar-ict}
+cortes_ict <- quantile(diario$ICT, probs = c(0, 1 / 3, 2 / 3, 1), na.rm = TRUE)
+if (length(unique(cortes_ict)) < 4) {
+  stop("No hay suficientes valores distintos para crear tres estados del ICT.")
+}
+diario$ICT_estado <- cut(
+  diario$ICT, breaks = cortes_ict,
+  labels = c("Bajo", "Medio", "Alto"),
+  include.lowest = TRUE, ordered_result = TRUE)
+cat("Cortes globales del ICT:", round(cortes_ict[2:3], 2), "\n")
+print(table(diario$ICT_estado))
+```
+
+Los estados del ICT se definen mediante terciles globales. Este procedimiento produce umbrales comunes para todos los meses y años y facilita el análisis de frecuencias y transiciones.
+
+```{r cortes-en-grados}
+# El ICT es una transformación lineal decreciente de AT_max, así que cada corte
+# del ICT corresponde a un umbral de AT máxima diaria en °C.
+ict_a_at <- function(ict) at_max - ict * (at_max - at_min) / 100
+tabla_estados <- data.frame(
+  Estado = c("Bajo", "Medio", "Alto"),
+  ICT_desde = round(cortes_ict[1:3], 2),
+  ICT_hasta = round(cortes_ict[2:4], 2),
+  AT_max_desde_C = round(ict_a_at(cortes_ict[2:4]), 2),
+  AT_max_hasta_C = round(ict_a_at(cortes_ict[1:3]), 2),
+  Dias = as.integer(table(diario$ICT_estado)),
+  row.names = NULL
+)
+tabla_estados
+```
+
+**Para el caso de Barranquilla:** los cortes fueron `r fmt(cortes_ict[2], 2)` y `r fmt(cortes_ict[3], 2)`. Se clasificaron `r tabla_estados$Dias[1]` días en estado bajo, `r tabla_estados$Dias[2]` en medio y `r tabla_estados$Dias[3]` en alto. Valores hasta `r fmt(cortes_ict[2], 2)` pertenecen al tercio de menor confort relativo y valores superiores a `r fmt(cortes_ict[3], 2)` al tercio de mayor confort. En grados, un día es de confort **bajo** cuando su AT máxima supera `r fmt(ict_a_at(cortes_ict[2]))` °C, **medio** cuando está entre `r fmt(ict_a_at(cortes_ict[3]))` y `r fmt(ict_a_at(cortes_ict[2]))` °C, y **alto** cuando no llega a `r fmt(ict_a_at(cortes_ict[3]))` °C. Los tres estados quedan separados por apenas unos `r fmt(ict_a_at(cortes_ict[2]) - ict_a_at(cortes_ict[3]))` °C, lo que muestra lo concentrada que está la AT máxima en Barranquilla.
+
+## 11.1. Distribución mensual de estados
+
+```{r estados-ict-por-mes}
+frecuencia_estados_mes <- diario %>%
+  count(Mes, ICT_estado, name = "Dias") %>%
+  group_by(Mes) %>%
+  mutate(Porcentaje = 100 * Dias / sum(Dias)) %>%
+  ungroup()
+
+ggplot(frecuencia_estados_mes,
+       aes(Mes, Porcentaje, fill = ICT_estado)) +
+  geom_col(color = "black") +
+  scale_fill_manual(values = c(Bajo = "firebrick",
+                               Medio = "khaki", Alto = "seagreen")) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 20),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(title = "Distribución mensual de los estados del ICT",
+       x = "Mes", y = "Porcentaje de días", fill = "Estado del ICT") +
+  tema_mensual
+```
+
+La distribución mensual de estados resume qué proporción de días pertenece a cada tercio global del ICT y permite localizar periodos de predominio de confort bajo, medio o alto.
+
+**Para el caso de Barranquilla:** los estados altos dominaron entre enero y marzo, especialmente en febrero. Abril mostró una composición más equilibrada. Entre mayo y agosto aumentó la proporción de días de ICT bajo, y septiembre concentró cerca de cuatro quintas partes de sus días en ese estado. En octubre comenzó la recuperación y durante noviembre y diciembre volvieron a predominar los estados medio y alto.
+
+## 11.2. Cadena global
+
+```{r funcion-cadena-markov-global}
+```
+
+```{r cadena-markov-global-ict}
+markov_ict <- cadena_markov_global(diario, "ICT_estado")
+cat("Número de transiciones consecutivas:", markov_ict$transiciones, "\n")
+cat("Conteos de transición:\n"); print(markov_ict$conteos)
+cat("Matriz de transición:\n"); print(round(markov_ict$P, 3))
+cat("Distribución estacionaria:\n"); print(round(markov_ict$estacionaria, 3))
+cat("Permanencia media esperada:\n"); print(round(markov_ict$permanencia_dias, 2))
+```
+
+La cadena de Markov utiliza únicamente pares de días consecutivos. La diagonal de la matriz mide persistencia, las probabilidades fuera de la diagonal describen cambios de estado y la permanencia esperada resume la duración media de los episodios.
+
+**Para el caso de Barranquilla:** se estimaron `r markov_ict$transiciones` transiciones. La persistencia fue `r fmt(markov_ict$P["Alto", "Alto"], 3)` en el estado alto, `r fmt(markov_ict$P["Bajo", "Bajo"], 3)` en el bajo y `r fmt(markov_ict$P["Medio", "Medio"], 3)` en el medio. Las transiciones directas entre extremos fueron poco frecuentes: `r fmt(markov_ict$P["Bajo", "Alto"], 3)` de bajo a alto y `r fmt(markov_ict$P["Alto", "Bajo"], 3)` de alto a bajo, por lo que los cambios tienden a pasar por el estado medio. La permanencia esperada fue de `r fmt(markov_ict$permanencia_dias["Alto"], 2)` días en alto, `r fmt(markov_ict$permanencia_dias["Bajo"], 2)` en bajo y `r fmt(markov_ict$permanencia_dias["Medio"], 2)` en medio. La distribución estacionaria fue aproximadamente uniforme (`r paste(fmt(markov_ict$estacionaria, 3), collapse = "; ")`) y cercana a las frecuencias marginales observadas. Esta proximidad es esperable porque los estados se definieron mediante terciles globales, aunque los cortes no obligan matemáticamente a una distribución estacionaria exactamente uniforme. El contraste entre periodos se examina con cadenas separadas por época.
+
+## 11.3. Cadenas por época
+
+Se estima una cadena para cada época con la misma función y los mismos cortes globales, de modo que un estado significa lo mismo en ambas. Al filtrar la base por época, la condición de días consecutivos impide unir el último día de una época con el primero de la siguiente temporada del mismo tipo.
+
+```{r cadenas-por-epoca}
+markov_epoca <- lapply(setNames(levels(diario$Epoca), levels(diario$Epoca)),
+                       function(e) cadena_markov_global(diario[diario$Epoca == e, ],
+                                                        "ICT_estado"))
+for (e in names(markov_epoca)) {
+  cat("\n==== Época", e, "====\n")
+  cat("Transiciones:", markov_epoca[[e]]$transiciones, "\n")
+  print(round(markov_epoca[[e]]$P, 3))
+  cat("Estacionaria:\n"); print(round(markov_epoca[[e]]$estacionaria, 3))
+  cat("Permanencia media (días):\n"); print(round(markov_epoca[[e]]$permanencia_dias, 2))
+}
+# Comparación: distribución estacionaria frente a frecuencia observada
+comparacion_estacionaria <- bind_rows(lapply(names(markov_epoca), function(e) {
+  data.frame(Epoca = e, Estado = names(markov_epoca[[e]]$estacionaria),
+             Estacionaria = round(markov_epoca[[e]]$estacionaria, 3),
+             Observada = round(as.numeric(prop.table(table(
+               diario$ICT_estado[diario$Epoca == e]))), 3),
+             row.names = NULL)
+}))
+comparacion_estacionaria
+```
+
+```{r mapas-matrices, fig.height = 4}
+matrices_largas <- bind_rows(lapply(
+  c(list(Global = markov_ict), markov_epoca), function(m) {
+    as.data.frame(as.table(m$P), stringsAsFactors = FALSE) %>%
+      setNames(c("Desde", "Hacia", "Prob"))
+  }), .id = "Cadena") %>%
+  mutate(Cadena = factor(Cadena, levels = c("Global", "Seca", "Humeda")),
+         Desde = factor(Desde, levels = rev(c("Bajo", "Medio", "Alto"))),
+         Hacia = factor(Hacia, levels = c("Bajo", "Medio", "Alto")))
+ggplot(matrices_largas, aes(Hacia, Desde, fill = Prob)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = fmt(Prob, 2)), size = 3.6) +
+  facet_wrap(~ Cadena) +
+  scale_fill_gradient(low = "#F7FBFF", high = "#08519C", limits = c(0, 1)) +
+  labs(title = "Matrices de transición del estado del ICT",
+       subtitle = "Fila: estado de hoy; columna: estado de mañana",
+       x = "Mañana", y = "Hoy", fill = "Probabilidad") +
+  theme_minimal() + theme(panel.grid = element_blank())
+```
+
+**Para el caso de Barranquilla:** las dos épocas son casi imágenes en espejo. En la seca, la probabilidad estacionaria del confort alto es `r fmt(markov_epoca$Seca$estacionaria["Alto"], 2)`, la del medio `r fmt(markov_epoca$Seca$estacionaria["Medio"], 2)` y la del bajo `r fmt(markov_epoca$Seca$estacionaria["Bajo"], 2)`; un día de confort alto se repite con probabilidad `r fmt(markov_epoca$Seca$P["Alto", "Alto"], 2)` y pasa directamente a bajo con probabilidad `r fmt(markov_epoca$Seca$P["Alto", "Bajo"], 2)`, lo que da rachas de confort alto de `r fmt(markov_epoca$Seca$permanencia_dias["Alto"])` días en promedio. En la húmeda el orden se invierte: el confort bajo tiene probabilidad estacionaria `r fmt(markov_epoca$Humeda$estacionaria["Bajo"], 2)`, el medio `r fmt(markov_epoca$Humeda$estacionaria["Medio"], 2)` y el alto `r fmt(markov_epoca$Humeda$estacionaria["Alto"], 2)`; un día de confort bajo se repite con probabilidad `r fmt(markov_epoca$Humeda$P["Bajo", "Bajo"], 2)`, con rachas de `r fmt(markov_epoca$Humeda$permanencia_dias["Bajo"])` días. Las distribuciones estacionarias coinciden con las frecuencias observadas en cada época (diferencia máxima de `r fmt(max(abs(comparacion_estacionaria$Estacionaria - comparacion_estacionaria$Observada)), 3)`), lo que es necesario pero no suficiente para evaluar la dinámica; las secciones siguientes examinan la homogeneidad, el orden de dependencia y el desempeño predictivo.
+
+## 11.4. ¿Son distintas las dos cadenas? Prueba de homogeneidad
+
+La prueba de razón de verosimilitud compara dos hipótesis: que ambas épocas comparten una sola matriz de transición (H0) o que cada época tiene la suya (H1). El estadístico es
+
+\[
+G^2 = 2\sum_{e}\sum_{j,k} n^{(e)}_{jk}\,\log\frac{\hat p^{(e)}_{jk}}{\hat p_{jk}},
+\]
+
+donde \(n^{(e)}_{jk}\) son los conteos de transición de la época \(e\), \(\hat p^{(e)}_{jk}\) la matriz de esa época y \(\hat p_{jk}\) la matriz que resulta al juntar los conteos de ambas. Bajo H0 sigue aproximadamente una \(\chi^2\) con \((E-1)\,S\,(S-1)\) grados de libertad (\(E\) = 2 épocas, \(S\) = 3 estados).
+
+```{r funciones-homogeneidad}
+```
+
+```{r homogeneidad}
+homogeneidad <- prueba_homogeneidad(lapply(markov_epoca, `[[`, "conteos"))
+round(homogeneidad, 4)
+```
+
+**Para el caso de Barranquilla:** \(G^2\) = `r fmt(homogeneidad["G2"], 1)` con `r homogeneidad["gl"]` grados de libertad (p `r fmt_pt(homogeneidad["p"])`). `r if (homogeneidad["p"] < 0.05) "Se rechaza que las dos épocas compartan la misma matriz: la dinámica del confort cambia con la época, y por eso conviene usar una cadena por época en lugar de la global." else "No hay evidencia de que las matrices difieran entre épocas."` Esta prueba responde una de las preguntas que el resumen dejaba como trabajo futuro.
+
+## 11.5. ¿Basta con mirar el día de hoy? Prueba del orden de la cadena
+
+Una cadena de orden 1 supone que el estado de mañana depende solo del estado de hoy. Una de orden 2 permite que también dependa del de ayer. Se comparan tres modelos encajados: orden 0 (días independientes), orden 1 y orden 2, con pruebas de razón de verosimilitud sobre ternas de días consecutivos. La comparación se hace dentro de cada época, para no confundir la dependencia temporal con el cambio de época.
+
+```{r funciones-orden-markov}
+```
+
+```{r orden-markov}
+orden_markov <- bind_rows(lapply(levels(diario$Epoca), function(e) {
+  cbind(Epoca = e, prueba_orden(diario[diario$Epoca == e, ]), row.names = NULL)
+}))
+orden_markov %>% select(-p_num_12)
+```
+
+El BIC penaliza el número de parámetros: el orden 2 necesita `r 3^2 * 2` probabilidades libres por época frente a `r 3 * 2` del orden 1, así que solo se prefiere si mejora mucho el ajuste. Las pruebas de razón de verosimilitud usan una aproximación asintótica $\chi^2$; por ello, sus resultados se interpretan junto con el BIC y los conteos observados.
+
+**Para el caso de Barranquilla:** en ambas épocas se rechaza la independencia entre días (orden 0 frente a 1: p `r fmt_pt(min(pchisq(orden_markov$G2_orden0_vs_1, orden_markov$gl_01, lower.tail = FALSE)))` en las dos). Al pasar de orden 1 a orden 2, el valor p fue `r fmt_p(orden_markov$p_num_12[1])` en la época seca y `r fmt_p(orden_markov$p_num_12[2])` en la húmeda, y el BIC eligió `r if (orden_markov$Orden_BIC[1] == orden_markov$Orden_BIC[2]) paste("orden", orden_markov$Orden_BIC[1], "en ambas épocas") else paste0("orden ", orden_markov$Orden_BIC[1], " en la seca y orden ", orden_markov$Orden_BIC[2], " en la húmeda")`. `r sig <- orden_markov$Epoca[orden_markov$p_num_12 < 0.05]; if (length(sig) == 0) "El día de ayer no añade información una vez se conoce el día de hoy, de modo que la cadena de orden 1 es adecuada." else paste0("La razón de verosimilitud detecta memoria adicional en la época ", paste(tolower(sig), collapse = " y "), ": allí el día de ayer todavía aporta algo. ", if (all(orden_markov$Orden_BIC <= 1)) "Aun así, el BIC prefiere el orden 1 en las dos épocas, porque esa mejora no compensa el triple de parámetros. La cadena de orden 1 es una simplificación razonable, aunque deja fuera parte de la memoria que muestra la ACF." else "El BIC también prefiere un orden mayor en esa época, de modo que la cadena de orden 1 debe leerse como una aproximación.")`
+
+## 11.6. Rachas observadas frente a rachas esperadas
+
+Si la cadena es adecuada, la duración de una racha en el estado \(j\) sigue una distribución geométrica con media \(1/(1-p_{jj})\). Se comparan esas medias con las duraciones reales, contando una racha como una secuencia de días consecutivos en el mismo estado dentro de una misma época.
+
+```{r funciones-rachas}
+```
+
+```{r rachas}
+rachas <- bind_rows(lapply(levels(diario$Epoca), function(e) {
+  cbind(Epoca = e, rachas_observadas(diario[diario$Epoca == e, ]))
+})) %>% mutate(Epoca = factor(Epoca, levels = levels(diario$Epoca)))
+
+tabla_rachas <- rachas %>%
+  group_by(Epoca, Estado) %>%
+  summarise(Rachas = n(), Media_observada = mean(Duracion),
+            Maxima = max(Duracion), .groups = "drop") %>%
+  mutate(Media_esperada = mapply(function(e, s) markov_epoca[[as.character(e)]]$permanencia_dias[as.character(s)],
+                                 Epoca, Estado)) %>%
+  mutate(across(c(Media_observada, Media_esperada), ~ round(.x, 2)))
+tabla_rachas
+
+# Distribución de duraciones: observada frente a geométrica
+dist_rachas <- rachas %>%
+  mutate(Duracion = pmin(Duracion, 8)) %>%
+  count(Epoca, Estado, Duracion, name = "n") %>%
+  group_by(Epoca, Estado) %>% mutate(Observada = n / sum(n)) %>% ungroup() %>%
+  mutate(Geometrica = mapply(function(e, s, d) {
+    p <- markov_epoca[[as.character(e)]]$P[as.character(s), as.character(s)]
+    if (d < 8) (1 - p) * p^(d - 1) else p^(d - 1)
+  }, Epoca, Estado, Duracion))
+ggplot(dist_rachas, aes(Duracion)) +
+  geom_col(aes(y = Observada, fill = Estado), alpha = 0.8) +
+  geom_line(aes(y = Geometrica), linewidth = 0.8) +
+  geom_point(aes(y = Geometrica), size = 1.4) +
+  facet_grid(Epoca ~ Estado) +
+  scale_fill_manual(values = colores_estado, guide = "none") +
+  scale_x_continuous(breaks = 1:8, labels = c(1:7, "8+")) +
+  labs(title = "Duración de las rachas de cada estado",
+       subtitle = "Barras: proporción observada; línea: geométrica que implica la cadena",
+       x = "Duración de la racha (días)", y = "Proporción de rachas") +
+  theme_minimal()
+```
+
+```{r aux-rachas, include=FALSE}
+r_e <- function(e, s, col) tabla_rachas[[col]][tabla_rachas$Epoca == e & tabla_rachas$Estado == s]
+```
+
+```{r racha-mas-larga}
+# Racha más larga de confort alto en la época seca.
+x <- diario %>%
+  filter(Epoca == "Seca", ICT_estado == "Alto") %>%
+  arrange(Fecha)
+corte <- c(TRUE, diff(as.numeric(x$Fecha)) != 1)
+grupos <- split(x$Fecha, cumsum(corte))
+mas_larga <- grupos[[which.max(lengths(grupos))]]
+racha_max <- data.frame(
+  Inicio = min(mas_larga),
+  Fin = max(mas_larga),
+  Dias = length(mas_larga),
+  Estado = "Alto"
+)
+p_racha_max <- markov_epoca$Seca$P["Alto", "Alto"]^(racha_max$Dias - 1)
+racha_max
+cat("Probabilidad condicional geométrica de alcanzar esa duración:",
+    signif(p_racha_max, 2), "\n")
+```
+
+**Para el caso de Barranquilla:** en la época seca, las rachas de confort alto duraron en promedio `r fmt(r_e("Seca", "Alto", "Media_observada"))` días frente a `r fmt(r_e("Seca", "Alto", "Media_esperada"))` esperados. En la húmeda, las de confort bajo duraron `r fmt(r_e("Humeda", "Bajo", "Media_observada"))` días frente a `r fmt(r_e("Humeda", "Bajo", "Media_esperada"))`. Que las medias coincidan es poco exigente, porque \(p_{jj}\) se estima con esas mismas rachas; lo informativo son las rachas largas. La más larga fue de `r r_e("Seca", "Alto", "Maxima")` días seguidos de confort alto en la época seca (`r format(racha_max$Inicio, "%d/%m/%Y")` a `r format(racha_max$Fin, "%d/%m/%Y")`). Bajo la geométrica de la cadena, la probabilidad condicional de que una racha de confort alto ya iniciada alcance al menos esa duración es del orden de 10<sup>`r floor(log10(p_racha_max))`</sup>, es decir, prácticamente imposible. Esa racha corresponde a la temporada seca de `r format(racha_max$Inicio, "%Y")`, mucho más ventosa que las otras, e indica que la probabilidad de permanencia no es igual todos los años: la cadena por época promedia temporadas secas más y menos confortables. El gráfico lo muestra en el panel de confort alto de la época seca: hay más rachas de un solo día de las que predice la geométrica (`r fmt(100 * mean(rachas$Duracion[rachas$Epoca == "Seca" & rachas$Estado == "Alto"] == 1))` % frente a `r fmt(100 * (1 - markov_epoca$Seca$P["Alto", "Alto"]))` %) y, a la vez, una racha mucho más larga que cualquiera esperable. Es la huella de mezclar años distintos en una sola matriz, y es coherente con el rechazo del orden 1 en la época seca.
+
+## 11.7. ¿En cuántos días se olvida el estado inicial?
+
+La matriz \(P^n\) da la probabilidad de cada estado dentro de \(n\) días a partir del estado de hoy. A medida que \(n\) crece, todas sus filas se acercan a la distribución estacionaria y el estado inicial deja de importar. Se registra el primer \(n\) en que la mayor diferencia entre filas de \(P^n\) y la estacionaria es menor que 0,05.
+
+```{r funciones-convergencia-pn}
+```
+
+```{r convergencia-pn}
+convergencia <- bind_rows(lapply(names(markov_epoca), function(e) {
+  m <- markov_epoca[[e]]
+  pn <- potencias(m$P)
+  bind_rows(lapply(seq_along(pn), function(n) {
+    data.frame(Epoca = e, n = n, Desde = rownames(m$P),
+               Prob_Alto = pn[[n]][, "Alto"], Prob_Bajo = pn[[n]][, "Bajo"],
+               Distancia = apply(abs(sweep(pn[[n]], 2, m$estacionaria)), 1, max))
+  }))
+})) %>% mutate(Epoca = factor(Epoca, levels = levels(diario$Epoca)),
+               Desde = factor(Desde, levels = c("Bajo", "Medio", "Alto")))
+dias_olvido <- convergencia %>%
+  group_by(Epoca, n) %>% summarise(Distancia = max(Distancia), .groups = "drop") %>%
+  group_by(Epoca) %>% summarise(Dias = min(n[Distancia < 0.05]), .groups = "drop")
+dias_olvido
+
+ggplot(convergencia, aes(n, Prob_Alto, color = Desde)) +
+  geom_hline(data = data.frame(Epoca = factor(names(markov_epoca), levels = levels(diario$Epoca)),
+                               pi_alto = sapply(markov_epoca, function(m) m$estacionaria["Alto"])),
+             aes(yintercept = pi_alto), linetype = "dashed", color = "grey40") +
+  geom_line(linewidth = 1) + geom_point(size = 1.5) +
+  facet_wrap(~ Epoca) +
+  scale_color_manual(values = colores_estado) +
+  scale_x_continuous(breaks = seq(1, 15, 2)) +
+  labs(title = "Probabilidad de un día de confort alto dentro de n días",
+       subtitle = "Según el estado de hoy; la línea discontinua es la probabilidad estacionaria",
+       x = "Días hacia adelante (n)", y = "P(confort alto)", color = "Estado de hoy") +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+**Para el caso de Barranquilla:** según la cadena, el estado de hoy deja de influir de forma apreciable a los `r dias_olvido$Dias[dias_olvido$Epoca == "Seca"]` días en la época seca y a los `r dias_olvido$Dias[dias_olvido$Epoca == "Humeda"]` días en la húmeda. Más allá de ese horizonte, la mejor predicción que ofrece la cadena es la distribución estacionaria de la época. Como la ACF sigue siendo positiva a 30 días, la persistencia real dura más que la que captura una cadena de orden 1: parte de esa memoria larga es el propio ciclo anual, que la cadena por época absorbe solo en parte.
+
+## 11.8. Validación predictiva
+
+La cadena se pone a prueba fuera de la muestra. Se estima con los datos anteriores a `r max(diario$Anio)` y se usa para predecir el estado del día siguiente en `r max(diario$Anio)`. Se compara con dos referencias simples: la **persistencia** (mañana igual que hoy) y la **climatología mensual** (la frecuencia de cada estado en ese mes del año). Se reporta el porcentaje de días en que el estado más probable según cada modelo coincidió con el observado; si se eligiera al azar, se acertaría alrededor de un 33 %.
+
+```{r validacion-predictiva}
+anio_prueba <- max(diario$Anio)
+entrenamiento <- diario %>% filter(Anio < anio_prueba)
+prueba <- diario %>% filter(Anio == anio_prueba)
+niveles_estado <- levels(diario$ICT_estado)
+
+# Modelos estimados solo con entrenamiento
+P_entrenamiento <- lapply(setNames(levels(diario$Epoca), levels(diario$Epoca)),
+                          function(e) cadena_markov_global(entrenamiento[entrenamiento$Epoca == e, ],
+                                                           "ICT_estado")$P)
+climatologia <- prop.table(table(factor(entrenamiento$Mes, levels = meses_es),
+                                 entrenamiento$ICT_estado), 1)
+
+# Pares (hoy, mañana) consecutivos en el año de prueba
+prueba <- prueba[order(prueba$Fecha), ]
+ok <- diff(as.numeric(prueba$Fecha)) == 1
+hoy <- prueba[-nrow(prueba), ][ok, ]
+manana <- prueba[-1, ][ok, ]
+
+prob_markov <- t(sapply(seq_len(nrow(hoy)), function(i)
+  P_entrenamiento[[as.character(manana$Epoca[i])]][as.character(hoy$ICT_estado[i]), ]))
+prob_persistencia <- t(sapply(seq_len(nrow(hoy)), function(i)
+  as.numeric(niveles_estado == as.character(hoy$ICT_estado[i]))))
+prob_clima <- t(sapply(seq_len(nrow(hoy)), function(i)
+  as.numeric(climatologia[as.character(manana$Mes[i]), niveles_estado])))
+
+evaluar <- function(prob) {
+  prediccion <- niveles_estado[max.col(prob, ties.method = "first")]
+  mean(prediccion == as.character(manana$ICT_estado))
+}
+validacion <- data.frame(
+  Modelo = c("Markov por época", "Persistencia", "Climatología mensual"),
+  Acierto = c(evaluar(prob_markov), evaluar(prob_persistencia), evaluar(prob_clima))
+)
+validacion %>% mutate(Acierto = round(100 * Acierto, 1))
+cat("Pares de días evaluados en", anio_prueba, ":", nrow(hoy), "\n")
+```
+
+**Para el caso de Barranquilla:** se evaluaron `r nrow(hoy)` pares de días consecutivos de `r anio_prueba`. La cadena acertó el estado del día siguiente en `r fmt(100 * validacion$Acierto[1])` % de los casos, frente a `r fmt(100 * validacion$Acierto[2])` % de la persistencia y `r fmt(100 * validacion$Acierto[3])` % de la climatología mensual. `r if (validacion$Acierto[1] - max(validacion$Acierto[2:3]) < 0.02) paste0("Las tres quedan prácticamente empatadas, todas por encima del 33 % que acertaría el azar. En ", anio_prueba, ", saber el estado de hoy añadió muy poco a lo que ya dice el mes del año, y ese año tuvo un ICT más estable que los de entrenamiento (", paste(sort(unique(entrenamiento$Anio)), collapse = " y "), ").") else paste0("La cadena es la que más acierta, y todas superan el 33 % que acertaría el azar: conocer el estado de hoy aporta información que el mes del año no contiene.")` La exactitud se interpreta considerando la frecuencia de los estados, porque una categoría predominante puede elevar el porcentaje de acierto. La evaluación usa un solo año incompleto y debe repetirse cuando haya más años.
+
+# 12. Variabilidad explicada y contribución LMG
+
+```{r funciones-descomposicion-lmg}
+```
+
+```{r descomposicion-lmg}
+variables_diarias <- c("TMP_max", "HR_media", "WND_media")
+aporte_lmg <- lmg(diario, variables_diarias)
+total_aporte <- sum(aporte_lmg)
+tabla_lmg <- data.frame(
+  Variable = names(aporte_lmg),
+  Aporte_R2 = as.numeric(aporte_lmg),
+  Porcentaje = if (total_aporte > 0)
+    100 * as.numeric(aporte_lmg) / total_aporte else NA_real_
+) %>%
+  mutate(Aporte_R2 = round(Aporte_R2, 3),
+         Porcentaje = round(Porcentaje, 1))
+cat("R² conjunto:", round(r2_modelo(variables_diarias, diario), 3), "\n")
+tabla_lmg
+```
+
+```{r r2-componentes-temporales}
+diario$Mes_f <- factor(diario$Mes, ordered = FALSE)
+modelos_r2 <- list(
+  Mes = lm(AT_max ~ Mes_f, data = diario),
+  Ciclo_armonico = lm(AT_max ~ seno_anual + coseno_anual, data = diario),
+  Variables_meteorologicas = lm(
+    AT_max ~ TMP_max + HR_media + WND_media, data = diario)
+)
+tabla_r2 <- data.frame(
+  Modelo = names(modelos_r2),
+  R2 = sapply(modelos_r2, function(m) summary(m)$r.squared),
+  R2_ajustado = sapply(modelos_r2, function(m) summary(m)$adj.r.squared)
+) %>%
+  mutate(across(c(R2, R2_ajustado), ~ round(.x, 3)))
+tabla_r2
+```
+
+El R² cuantifica la variabilidad representada por cada modelo. La descomposición LMG distribuye el R² conjunto entre las variables meteorológicas, promediando sus aportes sobre todos los órdenes posibles de entrada.
+
+**Para el caso de Barranquilla:** temperatura máxima, humedad media y viento medio explicaron conjuntamente `r fmt(100 * r2_modelo(variables_diarias, diario))` % de la variabilidad de la temperatura aparente máxima. LMG asignó `r fmt(tabla_lmg$Porcentaje[1])` % del aporte a temperatura máxima, `r fmt(tabla_lmg$Porcentaje[3])` % a viento y `r fmt(tabla_lmg$Porcentaje[2])` % a humedad. El mes explicó `r fmt(100 * tabla_r2$R2[1])` % y el ciclo armónico `r fmt(100 * tabla_r2$R2[2])` %. La temperatura fue el componente dominante, pero humedad y viento aportaron conjuntamente `r fmt(tabla_lmg$Porcentaje[2] + tabla_lmg$Porcentaje[3])` % de la variabilidad explicada. Como el ICT es una transformación lineal de la AT máxima, estos R² son idénticos para el ICT.
+
+## 12.1. Contribuciones por época
+
+```{r lmg-por-epoca}
+lmg_epoca <- bind_rows(lapply(levels(diario$Epoca), function(e) {
+  base <- diario[diario$Epoca == e, ]
+  a <- lmg(base, variables_diarias)
+  data.frame(Epoca = e, Variable = names(a),
+             Porcentaje = 100 * as.numeric(a) / sum(a),
+             R2_conjunto = r2_modelo(variables_diarias, base))
+}))
+lmg_epoca %>% mutate(across(c(Porcentaje, R2_conjunto), ~ round(.x, 3)))
+
+lmg_grafico <- bind_rows(
+  tabla_lmg %>% transmute(Grupo = "Total", Variable, Porcentaje),
+  lmg_epoca %>% transmute(Grupo = Epoca, Variable, Porcentaje)) %>%
+  mutate(Grupo = factor(Grupo, levels = c("Total", "Seca", "Humeda")),
+         Variable = recode(Variable, TMP_max = "Temperatura máxima",
+                           HR_media = "Humedad media", WND_media = "Viento medio"))
+ggplot(lmg_grafico, aes(Grupo, Porcentaje, fill = Variable)) +
+  geom_col(color = "black", width = 0.65) +
+  geom_text(aes(label = ifelse(Porcentaje >= 5, paste0(fmt(Porcentaje), " %"), "")),
+            position = position_stack(vjust = 0.5), size = 3.4) +
+  scale_fill_manual(values = c(`Temperatura máxima` = "#FC9272",
+                               `Humedad media` = "#9ECAE1", `Viento medio` = "#A1D99B")) +
+  labs(title = "Reparto LMG del R² de la AT máxima diaria",
+       x = NULL, y = "% del R² explicado", fill = NULL) +
+  theme_minimal() + theme(legend.position = "top")
+```
+
+```{r aux-lmg, include=FALSE}
+l_e <- function(e, v, col = "Porcentaje") lmg_epoca[[col]][lmg_epoca$Epoca == e & lmg_epoca$Variable == v][1]
+```
+
+**Para el caso de Barranquilla:** el R² conjunto fue `r fmt(l_e("Seca", "TMP_max", "R2_conjunto"), 3)` en la época seca y `r fmt(l_e("Humeda", "TMP_max", "R2_conjunto"), 3)` en la húmeda. El viento es la variable que más cambia de papel: aporta `r fmt(l_e("Seca", "WND_media"))` % de lo explicado en la época seca, en concordancia con las mayores velocidades observadas durante esos meses, y apenas `r fmt(l_e("Humeda", "WND_media"))` % en la húmeda, donde la velocidad media fue menor. La humedad pasa de `r fmt(l_e("Seca", "HR_media"))` % a `r fmt(l_e("Humeda", "HR_media"))` %. El aporte del viento en el total es mayor que dentro de cada época porque recoge, en parte, la diferencia entre épocas.
+
+# 13. Conclusiones
+
+La metodología reproducible integra control de cobertura, caracterización temporal, temperatura aparente, normalización relativa, análisis armónico, autocorrelación, estados discretos, cadenas de Markov global y por época, pruebas de homogeneidad y de orden, validación predictiva y descomposición de variabilidad. Esta estructura permite actualizar el estudio con nuevos archivos NOAA y mantener los mismos criterios de procesamiento y comparación.
+
+**Para el caso de Barranquilla:**
+
+1. El periodo `r min(diario$Anio)`-`r max(diario$Anio)` presentó un ciclo térmico anual claro. El mayor confort relativo se concentró al comienzo del año, especialmente en febrero, y el menor confort se observó entre julio y septiembre, con septiembre como el mes más desfavorable.
+
+2. La temperatura media mensual cambió en un intervalo relativamente estrecho, mientras humedad y viento mostraron contrastes más marcados. El aumento de la humedad desde mayo y la disminución simultánea del viento contribuyeron a elevar la temperatura aparente y reducir el ICT.
+
+3. La temperatura aparente media permaneció por encima de `r floor(min(resumen_at_mensual$AT_media[5:10]))` °C entre mayo y octubre, y su percentil 90 alcanzó `r fmt(val_ext(resumen_at_mensual, "AT_p90"))` °C en `r mes_ext(resumen_at_mensual, "AT_p90")`. La mayor carga térmica diaria se concentró entre las 10:00 y las 14:00 en `r fmt(100 * mean(diario$Hora_AT_max %in% 10:14))` % de los días.
+
+4. El ICT disminuyó al aumentar temperatura máxima y humedad, y aumentó con mayor velocidad del viento. La temperatura máxima fue el factor dominante, aunque humedad y viento aportaron conjuntamente una fracción relevante de la variabilidad.
+
+5. El ciclo armónico ubicó el máximo promedio del ICT hacia el `r fecha_dia(dia_maximo_ict)` y el mínimo hacia el `r fecha_dia(dia_minimo_ict)`, con amplitud de `r fmt(amplitud_anual, 2)` puntos y R² de `r fmt(resumen_modelo_armonico$r.squared, 3)`.
+
+6. Los estados bajo y alto tendieron a persistir durante varios días y las transiciones directas entre extremos fueron poco frecuentes, lo que indica una evolución gradual de los episodios de mayor y menor confort.
+
+7. La reducción temporal estimada del ICT fue débil y describe únicamente el periodo observado; el intervalo analizado no permite establecer una tendencia climática de largo plazo.
+
+8. Las épocas seca y húmeda mostraron niveles y dinámicas de confort diferentes. La temperatura del aire casi no cambia entre ellas, pero la humedad y el viento sí, y el ICT medio pasa de `r fmt(resumen_epocas$ICT_media[1])` a `r fmt(resumen_epocas$ICT_media[2])` (d = `r fmt(d_cohen, 2)`). El viento explica `r fmt(l_e("Seca", "WND_media"))` % del R² en la época seca y solo `r fmt(l_e("Humeda", "WND_media"))` % en la húmeda.
+
+9. Las cadenas por época son casi imágenes en espejo: en la seca predomina el confort alto (probabilidad estacionaria `r fmt(markov_epoca$Seca$estacionaria["Alto"], 2)`) y en la húmeda el bajo (`r fmt(markov_epoca$Humeda$estacionaria["Bajo"], 2)`). La prueba de homogeneidad confirma que sus matrices difieren (p `r fmt_pt(homogeneidad["p"])`), por lo que una sola cadena global oculta el contraste climático.
+
+10. La cadena de orden 1 es una aproximación `r if (all(orden_markov$Orden_BIC <= 1)) "adecuada según el BIC" else "útil, aunque el BIC sugiere memoria adicional"`, y el estado de hoy deja de influir de forma apreciable después de unos `r max(dias_olvido$Dias)` días. Validada en `r anio_prueba` con datos que no usó para estimarse, acertó el estado del día siguiente en `r fmt(100 * validacion$Acierto[1])` % de los casos, frente a `r fmt(100 * validacion$Acierto[2])` % de la persistencia y `r fmt(100 * validacion$Acierto[3])` % de la climatología mensual. La racha de `r racha_max$Dias` días de confort alto en `r format(racha_max$Inicio, "%Y")` muestra que la persistencia cambia de un año a otro.
+
+# 14. Alcance metodológico
+
+- La temperatura aparente de Steadman representa condiciones a la sombra (sin tener en cuenta la radiación solar) y combina temperatura, humedad relativa y viento.
+- El ICT expresa confort relativo respecto a los extremos observados durante `r min(diario$Anio)`-`r max(diario$Anio)`.
+- La cobertura mínima de 18 horas conserva `r nrow(diario)` días y representa la mayor parte del ciclo diario.
+- La temperatura aparente máxima diaria caracteriza el momento de mayor carga térmica estimada.
+- Las asociaciones y pruebas mensuales se interpretan considerando la dependencia temporal observada en la ACF.
+- Los estados bajo, medio y alto son categorías relativas definidas mediante terciles globales.
+- La cadena de Markov resume transiciones de un día y complementa, sin sustituir, la dependencia temporal de mayor alcance mostrada por la ACF.
+- Las cadenas por época resumen las transiciones bajo el supuesto de probabilidades constantes dentro de cada época; la transición entre épocas (fines de abril y de noviembre) no se modela.
+- La validación predictiva usa un único año de prueba, incompleto, y debe repetirse cuando haya más años disponibles.
+- Los resultados caracterizan el periodo y la estación meteorológica incluidos en los archivos NOAA procesados.
