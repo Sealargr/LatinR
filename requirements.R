@@ -3,6 +3,7 @@ paquetes <- c(
   "dplyr",
   "tidyr",
   "ggplot2",
+  "scales",
   "rmarkdown",
   "knitr"
 )

@@ -94,18 +94,29 @@ LatinR/
 ├── CONTRIBUTING.md
 ├── LatinR.Rproj
 ├── requirements.R
-├── analysis/      # Documentos R Markdown y resumen en LaTeX
-├── scripts/       # Funciones reutilizables (funciones.R) y etapas del flujo
+├── analysis/      # 01_metodologia_completa.Rmd y demás documentos
+├── scripts/       # funciones.R: funciones reutilizables que carga el .Rmd
 ├── outputs/       # HTML y PDF generados
 ├── figures/       # Figuras generadas
 ├── Data/          # CSV de NOAA (no versionados) e instrucciones
 └── docs/          # Página publicada con GitHub Pages
 ```
 
+## Organización del código
+
+El análisis completo está en [`analysis/01_metodologia_completa.Rmd`](analysis/01_metodologia_completa.Rmd).
+Las funciones reutilizables (formato, carga y limpieza de NOAA, pruebas de normalidad,
+KMO y Bartlett, cadenas de Markov, homogeneidad, orden, rachas y LMG) viven en
+[`scripts/funciones.R`](scripts/funciones.R). El documento las carga con `source()` y las
+muestra en la sección donde se explican mediante `knitr::read_chunk()`, así que el HTML
+conserva todo el código sin duplicarlo. El `.Rmd` localiza la raíz del proyecto
+(la carpeta con `LatinR.Rproj`), por lo que puede compilarse con el botón *Knit* o con
+`rmarkdown::render()`.
+
 ## Requisitos
 
 - R (≥ 4.2) y, opcionalmente, RStudio.
-- Paquetes: `dplyr`, `tidyr`, `ggplot2`, `rmarkdown`, `knitr`.
+- Paquetes: `dplyr`, `tidyr`, `ggplot2`, `scales`, `rmarkdown`, `knitr`.
 
 ## Reproducción
 
@@ -114,7 +125,7 @@ LatinR/
 # 2. Instalar los paquetes
 source("requirements.R")
 # 3. Guardar Data2023.csv, Data2024.csv y Data2025.csv en Data/
-# 4. Compilar el análisis
+# 4. Compilar el análisis (desde la raíz del proyecto)
 rmarkdown::render("analysis/01_metodologia_completa.Rmd", output_dir = "outputs")
 ```
 

@@ -1,0 +1,233 @@
+---
+title: "Construcción del Índice de Confort Térmico mediante la temperatura aparente de Steadman"
+subtitle: "Caracterización temporal del clima de Barranquilla"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: false
+    code_folding: show
+---
+
+```{r configuracion-general, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE, comment = NA,
+  fig.align = "center", fig.width = 8, fig.height = 5
+)
+options(scipen = 999)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Raíz del proyecto: la carpeta que contiene LatinR.Rproj. El .Rmd vive en
+# analysis/, pero las rutas (Data/, scripts/) se escriben desde la raíz.
+buscar_raiz <- function(desde = getwd()) {
+  ruta <- normalizePath(desde)
+  repeat {
+    if (file.exists(file.path(ruta, "LatinR.Rproj"))) return(ruta)
+    padre <- dirname(ruta)
+    if (padre == ruta) {
+      stop("No se encontró LatinR.Rproj; compile el documento dentro del proyecto.")
+    }
+    ruta <- padre
+  }
+}
+raiz <- buscar_raiz()
+knitr::opts_knit$set(root.dir = raiz)
+
+# Funciones reutilizables (formato, carga, limpieza, pruebas y Markov).
+# Se cargan aquí y cada una se muestra en la sección donde se explica.
+ruta_funciones <- file.path(raiz, "scripts", "funciones.R")
+source(ruta_funciones, local = knitr::knit_global(), encoding = "UTF-8")
+knitr::read_chunk(ruta_funciones)
+
+carpeta_datos <- "Data"
+if (!dir.exists(file.path(raiz, carpeta_datos))) {
+  stop("No se encontró la carpeta relativa 'Data' en la carpeta del proyecto.")
+}
+```
+
+# Introducción
+
+Este estudio presenta una metodología reproducible en R para construir un Índice de Confort Térmico (ICT) relativo a partir de registros meteorológicos horarios NOAA. El procedimiento integra temperatura del aire, punto de rocío y velocidad del viento; calcula la humedad relativa mediante la ecuación de Magnus; estima la temperatura aparente de Steadman; y analiza la variación mensual, horaria y diaria del confort térmico. La estructura permite incorporar archivos anuales adicionales y actualizar automáticamente los resúmenes, gráficos y modelos.
+
+**Para el caso de Barranquilla:** se procesaron registros de 2023 a 2025. Los resultados muestran una estructura anual reconocible: febrero presenta las condiciones relativas de mayor confort, el ICT disminuye desde marzo y alcanza sus valores más bajos entre julio y septiembre, con un mínimo mensual en septiembre. Posteriormente, el índice se recupera entre octubre y diciembre. Este comportamiento coincide con el aumento de la humedad relativa, el debilitamiento del viento y el incremento de la temperatura aparente durante buena parte del segundo y tercer trimestre del año.
+
+# 1. Importación, validación y limpieza
+
+## 1.1. Funciones de carga
+
+```{r definir-funciones-carga-noaa}
+```
+
+## 1.2. Importación generalizada
+
+```{r importar-validar-y-unir}
+rutas_noaa <- list.files(
+  path = carpeta_datos,
+  pattern = "^Data[0-9]{4}\\.csv$",
+  full.names = TRUE
+)
+if (length(rutas_noaa) == 0) {
+  stop("No se encontraron archivos DataYYYY.csv dentro de la carpeta Data.")
+}
+
+anios_archivos <- as.integer(
+  sub("^Data([0-9]{4})\\.csv$", "\\1", basename(rutas_noaa))
+)
+orden <- order(anios_archivos, basename(rutas_noaa))
+rutas_noaa <- rutas_noaa[orden]
+anios_archivos <- anios_archivos[orden]
+
+if (anyDuplicated(anios_archivos)) {
+  duplicados <- unique(anios_archivos[
+    duplicated(anios_archivos) |
+      duplicated(anios_archivos, fromLast = TRUE)
+  ])
+  stop("Existen años duplicados: ", paste(duplicados, collapse = ", "))
+}
+
+bases_noaa <- lapply(rutas_noaa, cargar_noaa)
+for (i in seq_along(bases_noaa)) {
+  validar_columnas(bases_noaa[[i]], basename(rutas_noaa[i]))
+}
+
+columnas_opcionales <- c("REPORT_TYPE", "LATITUDE", "LONGITUDE",
+                         "ELEVATION", "NAME")
+bases_seleccionadas <- lapply(seq_along(bases_noaa), function(i) {
+  conservar <- intersect(c(columnas_requeridas, columnas_opcionales),
+                         names(bases_noaa[[i]]))
+  df <- bases_noaa[[i]][, conservar, drop = FALSE]
+  df$ANIO_ARCHIVO <- anios_archivos[i]
+  df$ARCHIVO_ORIGEN <- basename(rutas_noaa[i])
+  df
+})
+
+columnas_union <- unique(unlist(lapply(bases_seleccionadas, names)))
+bases_seleccionadas <- lapply(bases_seleccionadas, function(df) {
+  for (columna in setdiff(columnas_union, names(df))) df[[columna]] <- NA
+  df[, columnas_union, drop = FALSE]
+})
+
+datos <- bind_rows(bases_seleccionadas)
+cat("Archivos procesados:", length(rutas_noaa), "\n")
+print(data.frame(Archivo = basename(rutas_noaa), Anio = anios_archivos),
+      row.names = FALSE)
+cat("Registros unidos:", nrow(datos), "\n")
+```
+
+La importación generalizada localiza los archivos `DataYYYY.csv`, valida las columnas requeridas, ordena los archivos por año y conserva la trazabilidad mediante el año y el nombre del archivo de origen. Este diseño permite ampliar el periodo sin modificar manualmente las rutas ni la lógica de unión.
+
+**Para el caso de Barranquilla:** se procesaron `r length(rutas_noaa)` archivos anuales, correspondientes a `r paste(anios_archivos, collapse = ", ")`, con `r fmt(nrow(datos), 0)` registros en conjunto.
+
+## 1.3. Funciones de limpieza
+
+```{r definir-funciones-limpieza}
+```
+
+## 1.4. Aplicación de la limpieza
+
+```{r aplicar-limpieza}
+datos$DATE <- as.POSIXct(datos$DATE,
+                         format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+if (anyNA(datos$DATE)) {
+  warning(sum(is.na(datos$DATE)),
+          " registros tienen DATE inválida y serán eliminados.")
+}
+
+datos <- datos[!is.na(datos$DATE), ]
+datos$TMP <- limpiar_temperatura(datos$TMP)
+datos$DEW <- limpiar_temperatura(datos$DEW)
+datos$WND <- limpiar_viento(datos$WND)
+datos$ANIO_FECHA <- as.integer(format(datos$DATE, "%Y", tz = "UTC"))
+inconsistencias_anio <- !is.na(datos$ANIO_FECHA) &
+  datos$ANIO_ARCHIVO != datos$ANIO_FECHA
+if (any(inconsistencias_anio)) {
+  warning(sum(inconsistencias_anio),
+          " registros no coinciden con el año indicado por el archivo.")
+}
+contenido_archivos <- datos %>%
+  count(Archivo = ARCHIVO_ORIGEN, Anio_en_fechas = ANIO_FECHA,
+        name = "Registros")
+contenido_archivos
+datos <- datos[order(datos$DATE), ]
+rownames(datos) <- NULL
+```
+
+La tabla anterior cruza el nombre de cada archivo con el año de sus fechas. Todo el análisis posterior toma el año a partir de la fecha de cada registro y no del nombre del archivo, de modo que un archivo mal nombrado no altera los resultados.
+
+**Para el caso de Barranquilla:** `r if (any(inconsistencias_anio)) paste0(fmt(sum(inconsistencias_anio), 0), " registros tienen un año distinto al que indica el nombre de su archivo (en ", paste(unique(contenido_archivos$Archivo[contenido_archivos$Archivo != paste0("Data", contenido_archivos$Anio_en_fechas, ".csv")]), collapse = " y "), "). Como el año se toma de la fecha, esto no afecta el análisis, pero conviene corregir los nombres de los archivos.") else "el año de las fechas coincide con el nombre de cada archivo."`
+
+## 1.5. Humedad relativa mediante Magnus
+
+```{r calcular-humedad-relativa}
+datos$HR <- 100 * exp(
+  (17.625 * datos$DEW) / (243.04 + datos$DEW) -
+    (17.625 * datos$TMP) / (243.04 + datos$TMP)
+)
+datos$HR <- pmin(pmax(datos$HR, 0), 100)
+```
+
+# 2. Serie horaria local y cobertura
+
+```{r construir-serie-horaria}
+datos$HORA_LOCAL <- as.POSIXct(
+  format(datos$DATE, "%Y-%m-%d %H:00:00", tz = "America/Bogota"),
+  format = "%Y-%m-%d %H:%M:%S", tz = "America/Bogota"
+)
+
+datos_limpios <- datos %>%
+  filter(!is.na(HORA_LOCAL)) %>%
+  group_by(HORA_LOCAL) %>%
+  summarise(
+    TMP = if (all(is.na(TMP))) NA_real_ else mean(TMP, na.rm = TRUE),
+    HR = if (all(is.na(HR))) NA_real_ else mean(HR, na.rm = TRUE),
+    WND = if (all(is.na(WND))) NA_real_ else mean(WND, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(HORA_LOCAL) %>%
+  mutate(
+    FECHA_HORA = HORA_LOCAL,
+    Fecha = as.Date(format(HORA_LOCAL, "%Y-%m-%d", tz = "America/Bogota")),
+    Hora = as.integer(format(HORA_LOCAL, "%H", tz = "America/Bogota")),
+    Anio = as.integer(format(HORA_LOCAL, "%Y", tz = "America/Bogota")),
+    Numero_mes = as.integer(format(HORA_LOCAL, "%m", tz = "America/Bogota")),
+    Mes = factor(meses_es[Numero_mes], levels = meses_es, ordered = TRUE)
+  )
+stopifnot(!anyDuplicated(datos_limpios$HORA_LOCAL))
+datos_limpios$Epoca <- asignar_epoca(datos_limpios$Numero_mes)
+cat("Horas únicas:", nrow(datos_limpios), "\n")
+```
+
+La consolidación horaria agrupa todos los reportes que pertenecen a la misma hora local y calcula un único valor por variable. Este paso asigna el mismo peso analítico a cada hora y evita que la frecuencia irregular de reportes altere los resúmenes temporales.
+
+Cada hora se asigna además a uno de dos periodos operativos: la **época seca**, de diciembre a abril, caracterizada por menor humedad relativa y mayor velocidad del viento, y la **época húmeda**, de mayo a noviembre, caracterizada por mayor humedad y menor ventilación. Esta clasificación, basada en el contraste mensual observado, se utiliza para comparar el confort y estimar una cadena de Markov por época.
+
+**Para el caso de Barranquilla:** la consolidación produjo `r fmt(nrow(datos_limpios), 0)` horas locales únicas.
+
+```{r diagnostico-cobertura}
+cobertura_diaria <- datos_limpios %>%
+  group_by(Fecha) %>%
+  summarise(
+    Horas_TMP = sum(!is.na(TMP)),
+    Horas_HR = sum(!is.na(HR)),
+    Horas_WND = sum(!is.na(WND)),
+    .groups = "drop"
+  )
+
+resumen_cobertura <- cobertura_diaria %>%
+  summarise(
+    Dias_observados = n(),
+    Dias_TMP_18h = sum(Horas_TMP >= 18),
+    Dias_HR_18h = sum(Horas_HR >= 18),
+    Dias_WND_18h = sum(Horas_WND >= 18),
+    Dias_completos_18h = sum(
+      Horas_TMP >= 18 & Horas_HR >= 18 & Horas_WND >= 18
+    )
+  )
+resumen_cobertura
+```
+
+El control de cobertura conserva únicamente los días con al menos 18 horas válidas en temperatura, humedad y viento. Este umbral exige información para tres cuartas partes del ciclo diario y reduce el efecto de días construidos con observaciones escasas.
+
+**Para el caso de Barranquilla:** de los `r fmt(resumen_cobertura$Dias_observados, 0)` días observados, `r fmt(resumen_cobertura$Dias_completos_18h, 0)` contaron con al menos 18 horas válidas en las tres variables, equivalente a una cobertura diaria conjunta del `r fmt(100 * resumen_cobertura$Dias_completos_18h / resumen_cobertura$Dias_observados)` %.
